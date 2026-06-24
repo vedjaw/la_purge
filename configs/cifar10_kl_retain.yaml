@@ -1,0 +1,16 @@
+dataset: cifar10
+model: resnet18
+forget_type: class
+forget_class: 0
+epochs: 15
+lr: 0.0005
+rep_weight: 0.05
+kd_weight: 2.0
+max_grad_norm: 1.0
+forget_objective: kl_retain
+forget_gate: 0
+retain_budget_factor: 5.0
+fa_target: 10.0
+fa_check_freq: 50
+batch_size: 128
+seed: 42

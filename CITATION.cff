@@ -1,0 +1,43 @@
+title: PURGE
+version: 1.0.0
+date-released: 2026-06-24
+url: https://github.com/vedjaw/la_purge
+repository-code: https://github.com/vedjaw/la_purge
+license: MIT
+authors:
+  - family-names: Jawandhia
+    given-names: Vedant
+  - family-names: Ahuja
+    given-names: Daksh
+  - family-names: Siddiqui
+    given-names: Ghufran Alam
+  - family-names: Trivedi
+    given-names: Prashant
+  - family-names: Sinha
+    given-names: Yash
+  - family-names: Narang
+    given-names: Pratik
+keywords:
+  - machine unlearning
+  - gradient projection
+  - continual learning
+  - differential privacy
+  - membership inference
+preferred-citation:
+  type: article
+  title: "PURGE: Projected Unlearning via Retain-Guided Erasure"
+  authors:
+    - family-names: Jawandhia
+      given-names: Vedant
+    - family-names: Ahuja
+      given-names: Daksh
+    - family-names: Siddiqui
+      given-names: Ghufran Alam
+    - family-names: Trivedi
+      given-names: Prashant
+    - family-names: Sinha
+      given-names: Yash
+    - family-names: Narang
+      given-names: Pratik
+  year: 2026
+  url: https://github.com/vedjaw/la_purge

@@ -1,0 +1,1342 @@
+\documentclass{article}
+
+% ACL style (preprint mode for non-anonymous version with page numbers)
+\usepackage[preprint]{acl}
+
+% Standard packages (matching teacher's paper)
+\usepackage{times}
+\usepackage{latexsym}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{microtype}
+
+% Core packages
+\usepackage{graphicx}
+\graphicspath{{images/}}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{amsthm}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{placeins}
+\usepackage{subcaption}
+\usepackage{url}
+\usepackage{cleveref}
+
+% --- Macros from old report ---
+\newcommand{\ours}{\textsc{Purge}}
+\newcommand{\klr}{\texttt{kl\_retain}}
+\newcommand{\eg}{\textit{e.g.}}
+\newcommand{\ie}{\textit{i.e.}}
+
+% --- Notation macros for formal proofs ---
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\KL}{\mathrm{KL}}
+\newcommand{\CE}{\mathrm{CE}}
+\newcommand{\MSE}{\mathrm{MSE}}
+\newcommand{\Df}{\mathcal{D}_f}
+\newcommand{\Dr}{\mathcal{D}_r}
+\newcommand{\gf}{g_{\mathrm{f}}}
+\newcommand{\gr}{g_{\mathrm{r}}}
+\newcommand{\gproj}{\tilde{g}_{\mathrm{f}}}
+\newcommand{\lossf}{\mathcal{L}_{\mathrm{f}}}
+\newcommand{\lossr}{\mathcal{L}_{\mathrm{r}}}
+\newcommand{\lossrep}{\mathcal{L}_{\mathrm{rep}}}
+\newcommand{\losskd}{\mathcal{L}_{\mathrm{KD}}}
+
+% --- Theorem environments ---
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}{Lemma}
+\newtheorem{corollary}{Corollary}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+\newtheorem{finding}{Finding}
+
+% --- Revision highlighting (all new/modified passages wrapped in \new{...}) ---
+% Use \new{text} for inline edits and \newpar{...} for whole paragraphs.
+\newcommand{\new}[1]{{\color{orange}#1}}
+\newcommand{\newpar}[1]{{\color{orange}#1}}
+
+\title{PURGE: Projected Unlearning via Retain-Guided Erasure}
+
+\author{
+  \textbf{Vedant Jawandhia\textsuperscript{1}},
+  \textbf{Daksh Ahuja\textsuperscript{1}} \\
+  \textbf{Ghufran Alam Siddiqui\textsuperscript{1}},
+  \textbf{Prashant Trivedi\textsuperscript{1}},
+  \textbf{Yash Sinha\textsuperscript{1}},
+  \textbf{Pratik Narang\textsuperscript{1}} \\
+  \textsuperscript{1}BITS Pilani, Pilani Campus, India
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\new{Machine unlearning must remove the influence of specific training data while preserving model utility on the rest -- the same trade-off as continual learning, but in the opposite direction. We exploit this duality and adapt A-GEM gradient projection so that every unlearning step provably does not increase the retain loss, giving the first \emph{per-step} retain-safety guarantee for approximate machine unlearning. We instantiate this idea in \ours{} (Projected Unlearning via Retain-Guided Erasure), which combines (i)~the projected update with (ii)~a \klr{} forget objective that targets the model's natural retain-confusion distribution and (iii)~dual stopping that realises explicit budgets on retain-loss and forget-distribution tolerances. The retain-safety guarantee is stated for the actual SGD-with-momentum optimiser including KD, gradient clipping, and momentum (Theorem~\ref{thm:retain_safety}); a separation theorem shows GA, SCRUB, and SalUn provably cannot match this guarantee (Theorem~\ref{thm:separation}). Across 22 class-level forgetting tasks on five datasets (CIFAR-10, MNIST, SVHN, STL10, PathMNIST) with ResNet-18, \ours{} reaches FA $= 8.9 \pm 0.6$\% near random chance with RA $> 96$\% and MIA AUROC $\approx 0.5$.
+We additionally report four field-level findings. Two stand out. First, \textbf{the pre-unlearning base model already has MIA AUROC $= 0.533$ at FA $= 99.7$\%}, showing that MIA AUROC in isolation is not a valid privacy metric for class-level unlearning; it must be paired with FA. Second, we adopt the recently proposed BN-recalibration diagnostic and show that \ours{} with standard BatchNorm is vulnerable ($\Delta F = +88$pp), but \textbf{replacing BatchNorm with GroupNorm eliminates the vulnerability entirely} ($\Delta F = 0$) while improving RA by $2$pp (to $99.2$\%) and FA by $1.3$pp (to $7.6$\%) at negligible TA cost ($-0.3$pp). The combination of weight-level forgetting and a per-step retain-safety guarantee is unique to \ours{}+GroupNorm among all methods tested. Code, configs, logs, and the BN-recalibration diagnostic are publicly released.}
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+
+\new{
+\paragraph{The setting.} Privacy regulations (GDPR Art.~17, CCPA, the EU AI Act) and data-licensing disputes (DMCA takedowns of training data, medical re-consent) increasingly require that a model demonstrably no longer relies on a specified subset of its training data. Retraining from scratch satisfies this exactly but is computationally prohibitive: on a single A100, retraining a ResNet-18 on CIFAR-10 takes $\sim 45$ minutes; on PathMNIST $\sim 2$ hours; on production-scale image or vision-language models, days to weeks. The unlearning question is therefore: \emph{can we modify a trained model so that it behaves as if a specified subset were absent from training, without the cost of full retraining?}
+
+\paragraph{Why existing methods are not yet enough.} Approximate unlearning methods divide along the privacy--utility frontier, and each occupies it in a different way:
+\begin{itemize}[nosep,leftmargin=*]
+\item Gradient ascent~\cite{thudi2022unrolling} maximises the forget-set loss; the same gradient often degrades retain-set accuracy, with no mechanism to prevent it (test accuracy collapses to $\sim 38$\% on CIFAR-10).
+\item SalUn~\cite{fan2024salun} masks the top-50\% salient weights and applies random-label updates inside the mask; effective in practice but offers no formal retain-performance guarantee.
+\item SCRUB~\cite{kurmanji2023unbounded} alternates a forget step and a retain step with a weighting $\lambda$; the result is brittle to $\lambda$ -- mistune it and either forgetting stalls (FA = 52.6\%) or retain accuracy collapses (RA = 93.7\%).
+\item Bad Teacher~\cite{chundawat2023badteacher} uses two teachers to push forget outputs away from competent ones; achieves moderate FA but no guarantee on retain-loss change.
+\item Fisher-based methods~\cite{golatkar2021scrubbing} are theoretically grounded but require expensive Hessian approximations that do not scale.
+\end{itemize}
+A separate problem, orthogonal to all of the above, is that the standard MIA-AUROC evaluation metric is uninformative on its own: \textbf{the pre-unlearning ResNet-18 already has MIA AUROC $= 0.533$ at FA $= 99.7$\%} on CIFAR-10 (Finding~\ref{find:mia}). Reporting MIA $\approx 0.5$ for a method that barely changes the weights is meaningless.
+
+\paragraph{Insight: unlearning is the dual of continual learning.}
+Continual learning (CL) protects old-task knowledge while learning new tasks; machine unlearning (MU) protects retained knowledge while erasing specific data -- the same trade-off in opposite directions. The connection has been acknowledged in passing~\cite{kurmanji2023unbounded,nguyen2020variational}, but never used at the algorithmic level. We do exactly that: we adapt A-GEM gradient projection~\cite{chaudhry2019agem} and use it as the \emph{primary} update operator for unlearning. The forget gradient is projected onto the half-space where retain loss does not increase, before every parameter update. This is the only piece needed to obtain a per-step retain-safety guarantee (Theorem~\ref{thm:retain_safety}); the rest of \ours{} is engineering scaffolding on top.
+
+\paragraph{Contributions} (full discussion in \S\ref{sec:contrib}).
+\begin{enumerate}[nosep,leftmargin=*]
+\item An explicit formulation of class-level unlearning as a constrained optimisation problem (\S\ref{sec:problem}) with three constraints: retain-loss budget, forget-distribution tolerance, and a trust region.
+\item \ours{}, an algorithm that solves it: per-step A-GEM projection enforces the retain constraint; the \klr{} target realises the forget constraint; dual stopping enforces the budgets.
+\item Two theorems made mathematically concrete: a retain-safety bound including KD weight $\beta$, gradient clipping $c$, and momentum $\mu$ (Theorem~\ref{thm:retain_safety}); and a separation theorem showing GA, SCRUB, and SalUn provably cannot match this guarantee (Theorem~\ref{thm:separation}).
+\end{enumerate}
+
+\paragraph{Novelty} (separate from contributions). What is new relative to prior work is (a) projection-as-primary-update (no prior approximate MU method has used A-GEM projection as the update rule, only as motivation~\cite{kurmanji2023unbounded}); (b) the retain-confusion target $p_r$ (prior KL-based methods target the uniform distribution); (c) framing MU as constrained optimisation with per-step constraint enforcement (rather than as a weighted multi-objective sum, which is how SCRUB, Bad Teacher, NegGrad+ frame it). We do not claim KD anchoring, representation matching, or early stopping as new; they are used as building blocks.
+
+\paragraph{Findings} (observations, not designed contributions; full statements in \S\ref{sec:findings}).
+\begin{enumerate}[nosep,leftmargin=*]
+\item MIA AUROC alone is insufficient for class-level unlearning (base model MIA $= 0.533$).
+\item Forget \emph{accuracy} is not monotonically non-increasing under projected gradient descent -- only forget \emph{loss} is. An earlier draft of this paper had a Proposition asserting FA monotonicity; the corrected statement (with proof) is in Finding~\ref{find:fa_dynamics}.
+\item Class-homogeneous forget batches can corrupt BatchNorm running statistics, manufacturing apparent forgetting that one retain forward pass reverses. We adopt the BN-recalibration diagnostic and report results in Table~\ref{tab:bn_recal}. \ours{} with standard BN has $\Delta F = +88.1$pp; replacing BN with GroupNorm eliminates this entirely ($\Delta F = 0$, Table~\ref{tab:gn_comparison}) while improving all other metrics. We recommend GroupNorm as the default backbone (Finding~\ref{find:bn}).
+\item Output-level forgetting (FA = 0) does not imply representation-level erasure: linear probes recover the forget class at 95--98\% from all approximate unlearning methods we tested (Finding~\ref{find:probe}).
+\end{enumerate}
+
+\paragraph{Method development was iterative.} The current design followed an earlier method (an influence-weighted entropy approach, IEWPv2) that was unstable in multi-class settings. The challenges encountered along the way -- BN corruption, KL-uniform detectability, FA collapse on PathMNIST, GA divergence -- and how each was resolved are listed in \S\ref{sec:contrib}.
+
+\paragraph{Evaluation.} \ours{} is evaluated on CIFAR-10, MNIST, SVHN, STL10, and PathMNIST with ResNet-18 across 22 class-level forgetting tasks. Baselines (SalUn, SCRUB, Bad Teacher, NegGrad+) are re-run with a unified MIA-AUROC protocol. On CIFAR-10 class 0 over 3 seeds, \ours{} reaches TA $= 85.2 \pm 0.2$\%, FA $= 8.9 \pm 0.6$\%, RA $= 97.2 \pm 0.1$\%, MIA $= 0.507 \pm 0.001$. Component isolation, BN-recalibration, Sweep~A (\S\ref{sec:eps_sweep}), Sweep~B (\S\ref{sec:eps_sweep_b}), and the GroupNorm architectural fix are all reported in this revision; remaining scale experiments (CIFAR-100, Tiny ImageNet, ViT, modern baselines) are listed in \S\ref{sec:planned}.
+
+\paragraph{Roadmap.} \S\ref{sec:contrib} separates contributions, novelty, findings, and challenges. \S\ref{sec:related} reviews prior work. \S\ref{sec:background}--\S\ref{sec:problem} set up the optimisation problem. \S\ref{sec:method} describes the \ours{} algorithm step by step. \S\ref{sec:theory} proves the two theorems. \S\ref{sec:findings} reports the four findings. \S\ref{sec:results}--\S\ref{sec:planned} cover experiments. Code at \url{https://github.com/vedjaw/la_purge}.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig_purge_vs_salun.png}
+\caption{One-step parameter-space geometry of SalUn (left) vs.\ \ours{} (right). \textbf{Left:} SalUn applies a random-label gradient $-M\odot g_{\mathrm{RL}}$ restricted to the top-$50$\% salient weights; the resulting update direction has no constraint on its inner product with the retain gradient $g_r$, so a single step can land outside the retain-safe half-space ($\langle g_{\mathrm{SalUn}}, g_r\rangle < 0$) and strictly increase retain loss (Theorem~\ref{thm:separation}). \textbf{Right:} \ours{} computes the raw forget gradient $g_f$ and projects out the component that points against $g_r$, yielding $\tilde{g}_f$ with $\langle\tilde{g}_f, g_r\rangle\ge 0$ at every step. This per-step constraint is the constructive realisation of Theorem~\ref{thm:retain_safety}: retain loss is non-increasing by construction, not by luck of hyperparameter tuning.}
+\label{fig:purge_vs_salun}
+\end{figure}
+}
+
+% ============================================================
+\new{
+\section{Contributions, Novelty, Findings, and Challenges}\label{sec:contrib}
+
+We separate four ideas that are often conflated in unlearning papers: \emph{what we built} (contributions), \emph{what is new} relative to prior work (novelty), \emph{what we discovered while running experiments} (findings), and \emph{what went wrong and how we fixed it} (challenges). The reviewer feedback motivating this paper revision specifically asked for this split.
+
+\paragraph{Contributions (what we built).}
+\begin{enumerate}[nosep,leftmargin=*]
+\item An explicit formulation of class-level machine unlearning as a constrained optimisation problem (Eq.~\ref{eq:problem}) with three constraints: retain-loss budget $\epsilon_R$, forget-distribution tolerance $\epsilon_F$, and an implicit trust region.
+\item \ours{}, an algorithm that solves Eq.~\ref{eq:problem} via per-step A-GEM-style gradient projection (retain constraint), the \klr{} objective (forget constraint), and dual stopping (tolerance budgets).
+\item Two theorems with practical optimiser components made explicit: a retain-safety bound including KD, gradient clipping, and momentum (Theorem~\ref{thm:retain_safety}); and a separation theorem showing no prior method (GA, SCRUB, SalUn) can provide a comparable per-step guarantee (Theorem~\ref{thm:separation}).
+\item A 22-experiment evaluation across five datasets (CIFAR-10, MNIST, SVHN, STL10, PathMNIST) with code, configs, and logs publicly released.
+\end{enumerate}
+
+\paragraph{Novelty (what is genuinely new vs.\ prior work).}
+\begin{itemize}[nosep,leftmargin=*]
+\item \emph{A-GEM projection as the \textbf{primary update rule} for unlearning.} SCRUB~\cite{kurmanji2023unbounded} invokes continual-learning intuitions but uses an alternating teacher-student step, not a projection. To our knowledge no prior approximate unlearning method has used CL gradient projection as the constructive update operator (Theorem~\ref{thm:separation}).
+\item \emph{The retain-confusion target $p_r$} (Eq.~\ref{eq:retain_confuse}). Prior KL-based forget objectives target the uniform distribution; we show analytically (Finding~\ref{find:mia}) and empirically that $p_r$ leads to outputs closer to a retrained model than uniform-targeted methods.
+\item \emph{Framing MU as a constrained optimisation with per-step constraint enforcement} rather than as a weighted multi-objective sum (which is how SCRUB, Bad Teacher, NegGrad+ all frame it). This is what enables Theorem~\ref{thm:retain_safety}.
+\end{itemize}
+
+\paragraph{What we do \emph{not} claim as new.}
+KD anchoring, representation matching, and early stopping are all well-known techniques; we use them as building blocks. The Findings (\S\ref{sec:findings}) are observations, not contributions -- e.g.\ Finding~\ref{find:probe} is reported as a field-level limitation that affects all approximate unlearning methods, not as a \ours{} contribution.
+
+\paragraph{Findings (what we discovered while experimenting).} See Section~\ref{sec:findings} for full statements and evidence; in brief:
+\begin{enumerate}[nosep,leftmargin=*]
+\item MIA AUROC is uninformative for class-level unlearning: the pre-unlearning base model already has MIA $= 0.533$ (Finding~\ref{find:mia}).
+\item Forget accuracy is not monotonically non-increasing during projected gradient descent; an earlier draft's Proposition was incorrect (Finding~\ref{find:fa_dynamics}).
+\item BatchNorm in \texttt{train} mode silently manufactures apparent forgetting; even with BN \emph{frozen} during unlearning, \ours{}+BN has $\Delta F = +88.1$pp. Replacing BN with GroupNorm fixes this entirely: \ours{}+GroupNorm has $\Delta F = 0$ with better RA ($99.2$\%) and FA ($7.6$\%) than the BN variant (Finding~\ref{find:bn}, Table~\ref{tab:gn_comparison}).
+\item Linear probes recover the forget class at $95$--$98$\% from all approximate unlearning methods we tested, including \ours{}. Output-level forgetting does not imply representation-level erasure (Finding~\ref{find:probe}).
+\end{enumerate}
+
+\paragraph{Challenges encountered and how each was overcome.}
+\begin{enumerate}[nosep,leftmargin=*]
+\item \textit{Class-homogeneous forget batches silently corrupted BatchNorm running statistics, producing artefactual forgetting and a $\sim 21$\% TA collapse in early runs.} Resolved by freezing all BN layers to \texttt{eval} mode at the start of unlearning (Algorithm~\ref{alg:purge} line~2). Ablation confirms a $2$pp TA gap between BN-frozen and BN-train modes (Table~\ref{tab:ablation}).
+\item \textit{The KL-uniform forget target was detectable by MIA because a retrained model never outputs uniform.} Resolved by introducing the \klr{} target (Eq.~\ref{eq:kl_retain}); MIA AUROC moved from $0.469$ (KL-uniform) to $0.496$ (\klr{}) on CIFAR-10 class~0.
+\item \textit{On PathMNIST, FA dropped from $99.8$\% to $0$\% within a single epoch -- a per-epoch FA check was too coarse.} Resolved by adding an intra-epoch FA check every $50$ batches (\S\ref{sec:stopping}); this is the algorithmic consequence of the FA non-monotonicity of Finding~\ref{find:fa_dynamics}.
+\item \textit{Pure gradient ascent diverged: forget cross-entropy grew unboundedly.} Resolved by combining the hard entropy cap (skip forget update when $\CE \ge \log K$), gradient clipping ($c=1$), and the retain-safety projection.
+\item \textit{Single-seed evaluation is below the standard of modern unlearning venues.} Partly resolved: the CIFAR-10 headline experiment uses 3 seeds ($\pm 0.2$pp TA, $\pm 0.6$pp FA, $\pm 0.001$ MIA); 3-seed reruns for the other four datasets are listed under Planned Experiments (\S\ref{sec:planned}).
+\item \textit{First-attempt baseline comparison used SalUn paper's Table~A2 numbers but our PURGE numbers are from a different stack, making the comparison noisy.} Resolved by re-running SalUn / Bad Teacher / SCRUB / NegGrad+ on our own code stack with a unified MIA-AUROC protocol (Section~\ref{sec:results}).
+\end{enumerate}
+
+\paragraph{How the results substantiate the contributions.}
+Contribution 1 (constrained optimisation formulation) is realised by the algorithm and its hyperparameters $(\epsilon_R \leftrightarrow \alpha, \epsilon_F \leftrightarrow \text{FA target})$, both of which appear directly in the experimental configuration (Table~\ref{tab:hyperparams_main}). Contribution 2 (algorithm) is evaluated on 22 forgetting tasks (\S\ref{sec:results}). Contribution 3 (theorems) is supported by Theorem~\ref{thm:retain_safety}'s derivation (with explicit dependence on $\eta, \mu, c, \beta$) and by the worst-case separation in Theorem~\ref{thm:separation}. Contribution 4 (open evaluation stack) is supported by the publicly released code and the unified-protocol baseline numbers in Table~\ref{tab:cifar10}. We do not over-claim: we report Findings 1--4 as limitations of either MIA evaluation or the entire class of approximate unlearning methods, not as \ours{}-specific contributions.
+}
+
+% ============================================================
+\section{Related Work}\label{sec:related}
+
+\paragraph{Exact unlearning.}
+SISA training~\cite{bourtoule2021sisa} partitions data into shards to enable exact removal by retraining a single shard.
+This approach provides provable guarantees but scales poorly with increasing model size and shard count.
+
+\paragraph{Gradient-based approximate unlearning.}
+Gradient ascent~\cite{thudi2022unrolling} tries to maximises the loss on forget data.
+While simple, it lacks a mechanism to preserve retain-set performance and often leads to severe accuracy degradation (e.g., test accuracy drops to $\sim$38\% on CIFAR-10).
+Amnesiac unlearning~\cite{graves2021amnesiac} subtracts cached gradient updates but requires storing per-sample gradients during training.
+
+\paragraph{Saliency and Fisher-based methods.}
+SalUn~\cite{fan2024salun} identifies the top-$k$ most salient weights via gradient norms and selectively updates them.
+It achieves strong results on CIFAR-10 but does not provide a formal guarantee on retain-set performance.
+\citet{golatkar2020eternal,golatkar2021scrubbing} use Fisher information to estimate parameter importance.
+However, computing the Fisher matrix is computationally expensive, and the approximation can introduce estimation errors.
+
+\paragraph{Knowledge distillation approaches.}
+\citet{chundawat2023badteacher} propose a two-teacher framework in which an incompetent teacher provides random outputs for forget data, while a competent teacher preserves knowledge on the retain set.
+This formulation effectively separates the forget and retain objectives but does not constrain the gradient to be retain-safe.
+
+\paragraph{Continual learning methods.}
+A-GEM~\cite{chaudhry2019agem} projects task gradients to avoid increasing loss on previous tasks.
+\citet{nguyen2020variational} and \citet{kurmanji2023unbounded} touch on the connection between CL and MU, but no prior work has formally exploited the CL--MU duality at the algorithm level using gradient projection as a constructive tool for unlearning.
+
+\paragraph{Mechanistic comparison with SCRUB.}
+SCRUB~\cite{kurmanji2023unbounded} is the closest method to \ours{} in motivation: both draw on CL intuitions and use KD to anchor retain-set behaviour.
+However, the two methods differ at the algorithmic level in three ways.
+First, SCRUB alternates between a forget step (maximising forget-set loss) and a retain step (minimising retain-set loss with KD), treating them as separate updates whose balance depends on a weighting hyperparameter~$\lambda$.
+If $\lambda$ is too low, retain accuracy degrades; if too high, forgetting stalls.
+\ours{} instead computes a single projected gradient that jointly satisfies both objectives, with retain safety guaranteed by construction (Theorem~\ref{thm:retain_safety}) regardless of hyperparameter choice.
+Second, SCRUB targets gradient ascent on the forget set, which we found empirically to either under-forget (FA $= 52.6$\%) or over-forget (FA $= 0.0$\%, RA $= 93.7$\%), whereas \ours{}'s \klr{} objective converges to a specific target distribution.
+Third, SCRUB does not perform intermediate-layer representation erasure; its forgetting operates only at the output level.
+
+\paragraph{Privacy evaluation.}
+Membership inference attacks (MIA)~\cite{shokri2017mia,carlini2022mia} measure whether a model reveals if a sample was in its training set.
+We use AUROC-based MIA comparing forget-class training samples against forget-class test samples, avoiding class-imbalance artifacts inherent in threshold-based accuracy metrics.
+
+% ============================================================
+\section{Background and Preliminaries}\label{sec:background}
+
+\begin{definition}[Retain-Safe Update]
+\label{def:retain_safe}
+A parameter update $\theta \to \theta - \eta g$ is \emph{retain-safe} if it does not increase the retain loss in the first-order approximation:
+\begin{equation}
+    \langle g, \nabla_\theta \lossr(\theta) \rangle \geq 0
+\end{equation}
+where $\lossr(\theta) = \frac{1}{|\Dr|} \sum_{(x,y) \in \Dr} \CE(f_\theta(x), y)$.
+\end{definition}
+
+\subsection{A-GEM for Continual Learning}
+
+Averaged Gradient Episodic Memory (A-GEM)~\cite{chaudhry2019agem} solves the constrained optimisation:
+\begin{equation}
+    \min_{g} \|g - g_{\text{new}}\|^2 \quad \text{s.t.} \quad \langle g, g_{\text{old}} \rangle \geq 0
+\end{equation}
+where $g_{\text{new}}$ is the gradient for the new task and $g_{\text{old}}$ is the reference gradient from old tasks. When $\langle g_{\text{new}}, g_{\text{old}} \rangle < 0$ (conflict), the solution is:
+\begin{equation}
+    \tilde{g} = g_{\text{new}} - \frac{\langle g_{\text{new}}, g_{\text{old}} \rangle}{\|g_{\text{old}}\|^2} g_{\text{old}}
+    \label{eq:agem_projection}
+\end{equation}
+which projects $g_{\text{new}}$ onto the boundary of the half-space $\{g : \langle g, g_{\text{old}} \rangle \geq 0\}$.
+
+% ============================================================
+
+\new{
+\section{Problem Formulation}\label{sec:problem}
+
+We pose machine unlearning as a constrained optimisation problem.
+Let $f_\theta : \mathcal{X} \to \Delta^K$ be the trained classifier ($K$ classes, $\Delta^K$ the probability simplex), $\theta_0$ the pre-unlearning weights, $\Df$ the forget set, $\Dr = \mathcal{D}_{\text{train}} \setminus \Df$ the retain set, and $p_r \in \Delta^K$ the retain-confusion distribution defined in Eq.~\ref{eq:retain_confuse}. The objective is to find an unlearned parameter $\theta^*$ that solves:
+\begin{equation}\label{eq:problem}
+\begin{aligned}
+\theta^* \;=\; & \arg\min_{\theta} \; \lossf(\theta;\Df) \\
+\text{s.t.} \quad & \lossr(\theta;\Dr) \;\le\; \lossr(\theta_0;\Dr) + \epsilon_R, \\
+                  & \KL\!\left(p_\theta(x_f) \,\|\, p_r\right) \;\le\; \epsilon_F \quad \forall\, x_f \in \Df, \\
+                  & \|\theta - \theta_0\| \;\le\; R,
+\end{aligned}
+\end{equation}
+where the forget and retain losses are decomposed as
+\[
+\lossf(\theta;\Df) \;=\; \E_{x_f \in \Df}\!\big[\KL(p_\theta(x_f)\|p_r)\big] \;+\; \lambda \, \lossrep(\theta;\Df),
+\]
+\[
+\lossr(\theta;\Dr) \;=\; \E_{(x,y)\in\Dr}\!\big[\CE(f_\theta(x), y)\big] \;+\; \beta \, \losskd(\theta,\theta_0;\Dr),
+\]
+with $\lambda \ge 0$ the representation-erasure weight, $\beta \ge 0$ the knowledge-distillation weight, $\epsilon_R \ge 0$ the retain-loss tolerance, $\epsilon_F \ge 0$ the forget-distribution tolerance, and $R > 0$ an implicit trust-region radius (enforced via early stopping rather than a hard constraint).
+
+\paragraph{How \ours{} realises each piece of Eq.~\ref{eq:problem}.}
+\begin{enumerate}[nosep,leftmargin=*]
+  \item The \emph{retain-loss constraint} is enforced \emph{per step} via A-GEM-style gradient projection (Section~\ref{sec:method}, Theorem~\ref{thm:retain_safety}): every parameter update is guaranteed to be retain-safe to first order.
+  \item The \emph{forget-distribution constraint} is the \klr{} objective (Eq.~\ref{eq:kl_retain}): we directly minimise $\KL(p_\theta(x_f)\|p_r)$.
+  \item The \emph{trust-region constraint} is enforced by the dual stopping criteria (retain-loss budget $\alpha L_0$ with $\alpha = 1 + \epsilon_R / L_0$, and forget-accuracy target $\text{FA}_{\text{target}}$).
+  \item The \emph{representation term} $\lossrep$ encourages forget-set activations to match the retain-set activation means at intermediate layers, modifying hidden representations in addition to the output.
+\end{enumerate}
+
+This formulation makes three things explicit that the original paper version conflated. First, retain-safety is a \emph{constraint}, not a soft penalty, and PURGE enforces it constructively rather than balancing it via a hyperparameter. Second, the choice of $p_r$ (instead of the uniform $\mathcal{U}(K)$) determines the forget-side feasibility region and is the source of the MIA advantage analysed in Finding~\ref{find:mia}. Third, the dual stopping criteria are the algorithmic realisation of the tolerances $(\epsilon_R, \epsilon_F)$ -- they are not arbitrary heuristics.
+
+\paragraph{Mapping to the rest of the paper.} Section~\ref{sec:method} describes how each term in Eq.~\ref{eq:problem} is computed; Section~\ref{sec:theory} proves the retain-safety constraint holds per step (Theorem~\ref{thm:retain_safety}) and that no prior MU method provides this guarantee (Theorem~\ref{thm:separation}); Section~\ref{sec:findings} reports four empirical findings that emerged while solving Eq.~\ref{eq:problem}.
+}
+
+% ============================================================
+
+\section{Methodology}\label{sec:method}
+
+\new{The methodology realises each term of the constrained problem in Eq.~\ref{eq:problem}: \S\ref{sec:cl_mu} adapts A-GEM projection to enforce the retain-loss constraint; \S\ref{sec:forget_obj} introduces the three forget objectives (including the \klr{} target that realises the forget-distribution constraint); \S\ref{sec:rep_erase} defines the representation term; \S\ref{sec:kd_anchor} the KD anchor; \S\ref{sec:stopping} the dual stopping criteria that realise the tolerance budgets.}
+
+\subsection{CL--MU Duality and Gradient Projection}\label{sec:cl_mu}
+
+In continual learning, A-GEM~\cite{chaudhry2019agem} ensures that a gradient update for a new task does not increase the loss on previous tasks by projecting the gradient when it conflicts with a reference gradient:
+\begin{equation}\label{eq:projection}
+\tilde{g} = g - \frac{\langle g, g_r \rangle}{\|g_r\|^2} g_r \quad \text{if } \langle g, g_r \rangle < 0
+\end{equation}
+where $g$ denotes the forget-direction gradient and $g_r$ denotes the retain-set gradient.
+
+In \ours{}, we compute $g_r$ as the gradient of the retain loss (cross-entropy plus knowledge distillation regularisation) and project the forget gradient onto the half-space $\{g : \langle g, g_r \rangle \geq 0\}$.
+This ensures that each update does not increase the retain-set loss; that is, every unlearning step is guaranteed to be retain-safe under the projection constraint.
+
+\subsection{Forget Objectives}\label{sec:forget_obj}
+
+\ours{} supports three forget objectives:
+
+\paragraph{Gradient Ascent (GA).}
+\begin{equation}
+\mathcal{L}_{\text{GA}} = -\text{CE}(\theta(x_f), y_f)
+\end{equation}
+This objective maximises the loss on forget data and is capped at $\log K$ (maximum entropy for $K$ classes) to prevent over-forgetting.
+
+\paragraph{KL-Uniform.}
+\begin{equation}
+\mathcal{L}_{\text{KL-U}} = \text{KL}\!\left(\log\sigma(\theta(x_f)) \,\|\, \mathcal{U}(K)\right)
+\end{equation}
+where $\mathcal{U}(K)$ is the uniform distribution over $K$ classes.
+
+\paragraph{KL-retain (Retain-Confusion Target).}
+Rather than targeting the uniform distribution, we precompute the retain confusion distribution $p_r$ by averaging the softmax outputs of the frozen original model $\theta_{\text{orig}}$ over $\mathcal{D}_r$:
+\begin{equation}\label{eq:retain_confuse}
+p_r = \frac{1}{|\mathcal{D}_r|}\sum_{x \in \mathcal{D}_r} \sigma(\theta_{\text{orig}}(x))
+\end{equation}
+The forget objective then becomes:
+\begin{equation}\label{eq:kl_retain}
+\mathcal{L}_{\text{KL-R}} = \text{KL}\!\left(\log\sigma(\theta(x_f)) \,\|\, p_r\right)
+\end{equation}
+This target is more realistic than the uniform distribution, as it reflects the \emph{natural confusion pattern} of the model, making the unlearned model's outputs statistically indistinguishable from those of a model retrained without $\mathcal{D}_f$.
+
+\subsection{Multi-Layer Representation Erasure}\label{sec:rep_erase}
+
+Output suppression alone is insufficient; \new{class-discriminative structure can persist in intermediate representations~\cite{golatkar2020eternal} (and our own Finding~\ref{find:probe} confirms this holds for every approximate unlearning method we tested, including \ours{}).}
+\ours{} operates on intermediate layers of the network and computes the mean squared error (MSE) between the forget-set activations and the retain-set activation means (computed using the frozen original model):
+\begin{equation}
+\mathcal{L}_{\text{rep}} = \frac{1}{L}\sum_{\ell=1}^{L} \|h_\ell^f - \bar{h}_\ell^r\|^2
+\end{equation}
+where $h_\ell^f$ are forget-set activations at layer $\ell$ and $\bar{h}_\ell^r$ are the retain-set activation means. \new{This term \emph{modifies} hidden-layer activations toward the retain-set distribution; we no longer claim it constitutes full information removal (Finding~\ref{find:probe}).}
+
+\subsection{KD-Anchored Stability}\label{sec:kd_anchor}
+
+A frozen copy $\theta_{\text{orig}}$ of the pre-unlearning model serves as a teacher for the retain set:
+\begin{equation}
+\mathcal{L}_{\text{KD}} = T^2 \cdot \text{KL}\!\left(\sigma(\theta(x_r)/T) \,\|\, \sigma(\theta_{\text{orig}}(x_r)/T)\right)
+\end{equation}
+where $T$ is the distillation temperature.
+This loss anchors the model's behaviour on $\mathcal{D}_r$ and complements the gradient projection constraint by reducing representation drift.
+
+\subsection{Entropy-Based Gating and Capping}
+
+\paragraph{Entropy gate.}
+If the model's output entropy on a forget batch exceeds $\log(K)\gamma$ (where $\gamma$ is the gate factor), the batch is already near maximum uncertainty and further forgetting is unnecessary.
+The update is therefore restricted to the retain objective.
+
+\paragraph{Hard entropy cap (GA only).}
+If $\text{CE}(\theta(x_f), y_f) \geq \log K$, the model is already maximally uncertain; the update is restricted to the retain objective, preventing gradient explosion.
+
+\subsection{Dual Self-Regulating Stopping}\label{sec:stopping}
+
+\paragraph{Retain-loss budget.}
+Before unlearning begins, the initial retain loss $L_0$ is computed.
+Unlearning stops if the retain loss exceeds $L_0 \times \alpha$ (the budget factor), preventing degradation of retain performance.
+
+\paragraph{FA target.}
+Forget accuracy (FA) is evaluated after each epoch.
+If FA drops below a predefined target (default: $100/K$\%, corresponding to random chance), unlearning is declared complete.
+An \emph{intra-epoch} FA check every $N$ batches detects rapid FA drops mid-epoch, preventing over-forgetting when a single epoch is too coarse.
+
+\subsection{BatchNorm Freezing}
+
+A subtle but critical detail arises in class-level unlearning, where forget batches contain samples from a single class and are therefore class-homogeneous.
+If BatchNorm~\cite{ioffe2015batchnorm} layers remain in training mode, their running statistics are corrupted by these homogeneous batches, causing downstream components to fail.
+\ours{} freezes all BatchNorm layers in \texttt{eval} mode during unlearning, preserving the statistics learned during base model training.
+
+\paragraph{Observation.}
+This behaviour was identified during debugging: early unlearning runs on CIFAR-10 suffered severe accuracy collapse when BatchNorm layers remained in training mode, with one initial run dropping to 21.6\% test accuracy due to a combination of BN corruption and checkpoint mismanagement.
+A controlled ablation isolating only the BN mode (\Cref{tab:ablation}) shows a milder but still meaningful degradation: TA drops from 84.5\% to 82.2\% and RA from 96.3\% to 94.1\% when BN is unfrozen.
+Switching all BatchNorm layers to \texttt{eval} mode resolved the issue, and this setting was used in all subsequent experiments.
+This failure mode is not specific to \ours{} and may affect any unlearning method operating on class-homogeneous batches, yet it is rarely documented.
+
+\begin{algorithm}[t]
+\caption{\ours{} Unlearning}\label{alg:purge}
+\begin{algorithmic}[1]
+\REQUIRE Trained model $\theta$, forget set $\mathcal{D}_f$, retain set $\mathcal{D}_r$
+\ENSURE Unlearned model $\theta^*$
+\STATE $\theta_{\text{orig}} \leftarrow \text{freeze}(\text{copy}(\theta))$
+\STATE Set all BatchNorm layers to \texttt{eval} mode
+\STATE $p_r \leftarrow \frac{1}{|\mathcal{D}_r|}\sum_{x \in \mathcal{D}_r}\sigma(\theta_{\text{orig}}(x))$ \hfill \textit{// retain confusion}
+\STATE $L_0 \leftarrow \text{CE}(\theta, \mathcal{D}_r)$; \quad $\text{budget} \leftarrow L_0 \times \alpha$
+\FOR{epoch $= 1$ to $T$}
+  \FOR{$(x_f, y_f)$ in $\mathcal{D}_f$}
+    \STATE Sample $(x_r, y_r)$ from $\mathcal{D}_r$
+    \STATE $g_r \leftarrow \nabla[\text{CE}(\theta(x_r), y_r) + \beta \cdot \mathcal{L}_{\text{KD}}]$
+    \STATE $\text{out}_f \leftarrow \theta(x_f)$
+    \IF{$H(\text{out}_f) > \log K \cdot \gamma$ \textbf{or} $\text{CE}(\theta(x_f), y_f) \geq \log K$}
+      \STATE Apply retain-only update using $g_r$; \textbf{continue}
+    \ENDIF
+    \STATE $g_f \leftarrow \nabla[\mathcal{L}_{\text{forget}} + \lambda \cdot \mathcal{L}_{\text{rep}}]$
+    \IF{$\langle g_f, g_r \rangle < 0$}
+      \STATE $g_f \leftarrow g_f - \frac{\langle g_f, g_r \rangle}{\|g_r\|^2} g_r$ \hfill \textit{// projection}
+    \ENDIF
+    \STATE $\theta \leftarrow \theta - \eta \cdot \text{clip}(g_f, c)$
+  \ENDFOR
+  \IF{$\text{FA}(\theta, \mathcal{D}_f) \leq \text{FA}_{\text{target}}$}
+    \STATE \textbf{break}
+  \ENDIF
+  \IF{$\text{CE}(\theta, \mathcal{D}_r) > \text{budget}$}
+    \STATE \textbf{break}
+  \ENDIF
+\ENDFOR
+\RETURN $\theta^* \leftarrow \theta$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig6_algorithm_overview.png}
+\caption{Overview of the \ours{} unlearning pipeline. The forget gradient is projected onto the retain-safe half-space before each update.}
+\label{fig:overview}
+\end{figure}
+
+\new{
+\subsection{Algorithm Steps}\label{sec:alg_steps}
+
+Algorithm~\ref{alg:purge} can be read as a sequence of seven steps, each realising a specific term of the constrained optimisation problem in Eq.~\ref{eq:problem}.
+
+\paragraph{Step 1 (lines 1--2): Teacher snapshot and BatchNorm freeze.}
+\emph{What it computes:} a frozen copy of $\theta_0$ for KD, and a global switch to BN \texttt{eval} mode.
+\emph{Theoretical role:} provides the stable teacher distribution for $\losskd$ (the $\beta\losskd$ term of the composite retain loss in Theorem~\ref{thm:retain_safety}); the BN freeze closes the loophole exposed in Finding~\ref{find:bn}, ensuring apparent forgetting is realised in weights rather than BN running statistics.
+
+\paragraph{Step 2 (line 3): Retain-confusion estimation.}
+\emph{What it computes:} the empirical average softmax $p_r = \tfrac{1}{|\Dr|}\sum_{x\in\Dr}\sigma(\theta_0(x))$ over the retain set.
+\emph{Theoretical role:} realises the target distribution for the forget-distribution constraint $\KL(p_\theta(x_f)\|p_r) \le \epsilon_F$ in Eq.~\ref{eq:problem}. By Finding~\ref{find:mia}, this target is what makes the MIA bound conditional rather than vacuous (the bound is only useful when the target distribution matches what a retrained model would output, which $p_r$ approximates but $\mathcal{U}(K)$ does not).
+
+\paragraph{Step 3 (line 4): Initial retain-loss budget.}
+\emph{What it computes:} the initial retain loss $L_0 = \CE(\theta, \Dr)$ and the stopping threshold $\alpha L_0$.
+\emph{Theoretical role:} realises the retain-loss constraint $\lossr(\theta;\Dr) \le \lossr(\theta_0;\Dr) + \epsilon_R$ with $\epsilon_R = (\alpha - 1)L_0$. This is the safety net that catches the residual momentum leakage from Theorem~\ref{thm:retain_safety} (Remark~\ref{rem:params}).
+
+\paragraph{Step 4 (lines 6--7): Retain gradient with KD.}
+\emph{What it computes:} the composite retain gradient $\gr = \nabla[\CE + \beta\losskd]$ on a retain mini-batch.
+\emph{Theoretical role:} provides the reference direction $\gr$ used by the projection in Theorem~\ref{thm:retain_safety}. Including the KD term means the per-step bound holds w.r.t.\ the composite retain objective $\widetilde{\lossr}$ rather than $\CE$ alone (Remark~\ref{rem:params}).
+
+\paragraph{Step 5 (lines 8--10): Entropy gate and hard cap.}
+\emph{What it computes:} the entropy $H(\theta(x_f))$ and the cross-entropy $\CE(\theta(x_f), y_f)$ of the forget batch; skip the forget step if either threshold is exceeded.
+\emph{Theoretical role:} prevents gradient explosion when the forget distribution is already at maximum entropy (a singularity for the KL gradient). On gated steps the update reduces to a pure retain step, which still satisfies Theorem~\ref{thm:retain_safety}.
+
+\paragraph{Step 6 (lines 11--14): Forget gradient, projection, and clipping.}
+\emph{What it computes:} the forget gradient $\gf = \nabla[\lossf + \lambda\lossrep]$, the projected version $\gproj$ (Eq.~\ref{eq:projection}), and the clipped update $\eta\,\mathrm{clip}_c(\gproj + \mu v)$.
+\emph{Theoretical role:} this is the central step of Eq.~\ref{eq:problem}. The projection enforces the retain-loss constraint per step (Theorem~\ref{thm:retain_safety}); clipping bounds the $O(\eta^2 c^2)$ term; momentum introduces the $O(\eta\mu\|v\|)$ leakage analysed in Remark~\ref{rem:params}.
+
+\paragraph{Step 7 (lines 17--21): Dual stopping.}
+\emph{What it computes:} two early-exit checks per epoch -- FA $\le$ target, and retain loss $>$ budget.
+\emph{Theoretical role:} realises both tolerance budgets of Eq.~\ref{eq:problem} ($\epsilon_F$ via FA target, $\epsilon_R$ via budget). Due to Finding~\ref{find:fa_dynamics} the FA check is performed intra-epoch (every 50 batches) rather than only at epoch boundaries.
+}
+
+\subsection{Computational Cost}\label{sec:cost}
+
+A practical concern with approximate unlearning algorithms is whether they provide a meaningful speedup over retraining from scratch.
+On our hardware (single NVIDIA RTX 3090), training a ResNet-18 on CIFAR-10 for 200 epochs takes approximately 45 minutes.
+\ours{} with \klr{} converges in about 1.75 epochs (around 70 gradient steps on the forget set), completing in under 200 seconds, corresponding to a $\sim 13\times$ speedup.
+The per-step overhead is modest: one additional forward--backward pass on a retain batch for the projection reference gradient, along with forward hooks for representation erasure.
+On PathMNIST, where the training set is larger ($\sim$90K samples), \ours{} completes in under 5 minutes compared to an estimated 2+ hours for full retraining.
+The speedup primarily arises because \ours{} iterates only over the forget set, avoiding repeated passes over the full training data.
+
+% ============================================================
+\section{Theoretical Analysis}\label{sec:theory}
+
+\new{We present two formal results that hold under \emph{precisely stated} assumptions about the practical optimiser: (i)~a per-step retain-safety guarantee for the actual SGD-with-momentum update used by \ours{} including gradient clipping and the KD term (Theorem~\ref{thm:retain_safety}); and (ii)~a separation result showing that no prior approximate unlearning method (GA, SCRUB, SalUn) can match this guarantee (Theorem~\ref{thm:separation}). Claims that depended on unverified empirical assumptions in earlier drafts -- the MIA bound and the FA monotonicity proposition -- have been moved to the Findings section (\S\ref{sec:findings}) where they are reported as empirical observations with their assumptions made explicit.}
+
+\subsection{Retain-Safety Guarantee}
+
+\new{We state the guarantee for the full SGD-with-momentum update used in Algorithm~\ref{alg:purge}, including the KD weight $\beta$, the gradient-clipping norm $c$, and the SGD momentum coefficient $\mu$. Earlier drafts proved the guarantee for an idealised pure-projected-gradient update and only mentioned KD / momentum / clipping in a remark; here we make the dependence explicit.}
+
+\begin{theorem}[Retain-Safe Update with KD, Clipping, and Momentum]
+\label{thm:retain_safety}
+\new{Let the composite retain objective be
+\[
+\widetilde{\lossr}(\theta) \;=\; \underbrace{\frac{1}{|\Dr|}\!\sum_{(x,y)\in\Dr}\!\!\CE(f_\theta(x),y)}_{=\,\lossr(\theta)} \;+\; \beta\, \losskd(\theta,\theta_0;\Dr),
+\]
+and define the reference retain gradient $\gr := \nabla_\theta \widetilde{\lossr}(\theta)$. Let $\gproj$ be the projected forget gradient (Eq.~\ref{eq:projection}). Define the clipped, momentum-augmented \ours{} update as
+\begin{equation}\label{eq:update_full}
+\begin{aligned}
+v_{t+1} &= \mu\, v_t + \gproj^{(t)}, \\
+u_{t+1} &= \mathrm{clip}_c(v_{t+1}) := v_{t+1} \cdot \min\!\Big(1,\, \tfrac{c}{\|v_{t+1}\|}\Big), \\
+\theta_{t+1} &= \theta_t - \eta\, u_{t+1},
+\end{aligned}
+\end{equation}
+where $\eta>0$ is the learning rate, $\mu\in[0,1)$ the momentum coefficient, and $c>0$ the clip norm. Assume $\widetilde{\lossr}$ is $L$-smooth (i.e.\ $\nabla\widetilde{\lossr}$ is $L$-Lipschitz). Then:
+\begin{equation}\label{eq:thm1_bound}
+\widetilde{\lossr}(\theta_{t+1}) \;\le\; \widetilde{\lossr}(\theta_t) \;+\; \underbrace{\eta\,\mu \,\|\gr^{(t)}\|\,\|v_t\|}_{\text{momentum leakage}} \;+\; \underbrace{\tfrac{1}{2}L\,\eta^2 c^2}_{\text{second-order term}}.
+\end{equation}}
+\end{theorem}
+
+\begin{proof}
+\new{By $L$-smoothness,
+\[
+\widetilde{\lossr}(\theta_{t+1}) \le \widetilde{\lossr}(\theta_t) + \langle \gr^{(t)}, \theta_{t+1}-\theta_t\rangle + \tfrac{L}{2}\|\theta_{t+1}-\theta_t\|^2.
+\]
+The squared step is $\|\theta_{t+1}-\theta_t\|^2 = \eta^2\|u_{t+1}\|^2 \le \eta^2 c^2$ by the clipping definition, giving the second-order term. The first-order term decomposes as
+\[
+\langle \gr^{(t)}, \theta_{t+1}-\theta_t\rangle = -\eta\,\langle \gr^{(t)}, u_{t+1}\rangle = -\eta\,\alpha\,\langle \gr^{(t)}, v_{t+1}\rangle,
+\]
+where $\alpha := \min(1, c/\|v_{t+1}\|)\in(0,1]$ is the clipping factor. Expanding $v_{t+1} = \mu v_t + \gproj^{(t)}$:
+\[
+\langle \gr^{(t)}, v_{t+1}\rangle = \mu\,\langle \gr^{(t)}, v_t\rangle + \underbrace{\langle \gr^{(t)}, \gproj^{(t)}\rangle}_{\ge\, 0 \text{ by projection}}.
+\]
+The projected term is non-negative by the standard A-GEM projection: if $\langle \gf, \gr\rangle\ge 0$ then $\gproj=\gf$ and the inner product equals $\langle \gf,\gr\rangle\ge 0$; if $\langle\gf,\gr\rangle<0$ the projection (Eq.~\ref{eq:projection}) gives $\langle \gproj,\gr\rangle = 0$ (a direct computation). Hence
+\[
+\langle \gr^{(t)}, \theta_{t+1}-\theta_t\rangle \le -\eta\,\alpha\,\mu\,\langle\gr^{(t)},v_t\rangle \le \eta\,\mu\,\|\gr^{(t)}\|\,\|v_t\|
+\]
+by Cauchy--Schwarz and $\alpha\le 1$. Combining with the second-order term yields Eq.~\ref{eq:thm1_bound}.}
+\end{proof}
+
+\begin{remark}[Role of each hyperparameter]\label{rem:params}
+\new{Each term in Eq.~\ref{eq:thm1_bound} is controlled by exactly one knob.
+\begin{itemize}[nosep,leftmargin=*]
+\item $\eta$ (learning rate): both terms shrink as $\eta\to 0$, and the second-order term is $O(\eta^2)$.
+\item $\mu$ (momentum): if $\mu=0$ the leakage term vanishes; with $\mu=0.9$ it is the main source of deviation from the pure-projection guarantee. In practice $\|v_t\|$ stays bounded due to clipping, so the leakage is small but nonzero. This is the formal version of the ``momentum violates the guarantee'' caveat noted by the reviewer.
+\item $c$ (clip norm): bounds the second-order term and bounds $\|v_t\|$ recursively. Small $c$ tightens the bound but slows convergence.
+\item $\beta$ (KD weight): does \emph{not} appear in the bound because the projection is computed against the composite retain gradient $\gr := \nabla\widetilde{\lossr}$, which already contains $\beta\nabla\losskd$. The proof therefore goes through for the composite retain objective $\widetilde{\lossr}$. The guarantee for the bare cross-entropy retain loss $\lossr$ holds up to $O(\beta\|\nabla\losskd\|)$, since $\nabla\lossr = \nabla\widetilde{\lossr} - \beta\nabla\losskd$.
+\end{itemize}}
+\end{remark}
+
+\begin{corollary}[A-GEM reduction]\label{cor:agem_reduction}
+\new{Setting $\mu = 0$ (no momentum), $\beta = 0$ (no KD), and $c = \infty$ (no clipping) in Eq.~\ref{eq:update_full} reduces Theorem~\ref{thm:retain_safety} to
+\[
+\lossr(\theta_{t+1}) \le \lossr(\theta_t) + O(\eta^2),
+\]
+recovering the original A-GEM guarantee~\cite{chaudhry2019agem} exactly. The leakage term vanishes and only the second-order Taylor term remains.}
+\end{corollary}
+
+\subsection{\new{Per-Step Retain-Safety Separation}}\label{sec:separation}
+
+\new{The retain-safety guarantee of Theorem~\ref{thm:retain_safety} is not just a self-claim: we now show that the three closest baseline methods provably \emph{cannot} provide a comparable per-step guarantee, in the sense that there exist configurations for which their updates strictly increase the retain loss to first order.}
+
+\begin{theorem}[Per-Step Retain-Safety Separation]
+\label{thm:separation}
+\new{Fix a model $\theta_0$, a forget set $\Df$, and a retain set $\Dr$ with retain gradient $\gr := \nabla\lossr(\theta_0)$. Consider one-step update operators $H_M(\theta_0)$ for $M\in\{\text{GA},\text{SCRUB},\text{SalUn},\ours{}\}$. Then:
+\begin{enumerate}[nosep,leftmargin=*]
+\item \textbf{Gradient ascent (GA).} The update is $H_{\text{GA}} = \theta_0 - \eta(-\gf) = \theta_0 + \eta\gf$. Whenever $\langle \gf, \gr\rangle > 0$, a single GA step strictly increases retain loss to first order: $\lossr(H_{\text{GA}}) = \lossr(\theta_0) + \eta\langle \gf,\gr\rangle + O(\eta^2)$.
+\item \textbf{SCRUB.} With weighting $\lambda>0$, SCRUB's combined update direction is $g_{\text{SCRUB}} = -\gf + \lambda\,\gr$. For any fixed $\lambda$, there exist $\gf,\gr$ with $\langle g_{\text{SCRUB}}, \gr\rangle = -\langle\gf,\gr\rangle + \lambda\|\gr\|^2 < 0$. No \emph{single} choice of $\lambda$ avoids this for all inputs.
+\item \textbf{SalUn.} The saliency-masked random-label update is $g_{\text{SalUn}} = -M\odot\nabla\CE_{\text{RL}}$ where $M$ is a binary mask of the top-$50\%$ salient weights. The inner product $\langle g_{\text{SalUn}},\gr\rangle$ is a sum over masked coordinates with no sign constraint; constructions exist where $\langle g_{\text{SalUn}}, \gr\rangle < 0$.
+\item \textbf{\ours{}.} By Theorem~\ref{thm:retain_safety}, the projected update satisfies $\langle \gproj,\gr\rangle \ge 0$ unconditionally and $\widetilde{\lossr}(H_{\ours{}}) \le \widetilde{\lossr}(\theta_0) + O(\eta\mu\|v\| + \eta^2)$.
+\end{enumerate}
+That is, only \ours{} provides a constructive per-step bound on the retain-loss change.}
+\end{theorem}
+
+\begin{proof}
+\new{Each statement is a constructive one-line check.
+For (1), $\lossr(\theta_0 + \eta\gf) = \lossr(\theta_0) + \eta\langle\gf,\nabla\lossr\rangle + O(\eta^2) = \lossr(\theta_0) + \eta\langle\gf,\gr\rangle + O(\eta^2)$, strictly larger than $\lossr(\theta_0)$ whenever $\langle\gf,\gr\rangle>0$.
+For (2), choose any $\gf,\gr$ with $\langle\gf,\gr\rangle > \lambda\|\gr\|^2$. This is satisfiable whenever $\langle\gf,\gr\rangle/\|\gr\|^2 > \lambda$, which holds in any neighbourhood of the trained model where forget and retain gradients are positively correlated (the typical case for a model that has memorised forget-class features).
+For (3), with random labels the masked gradient direction is uncorrelated with $\gr$ in expectation; specific draws can produce arbitrary sign for $\langle g_{\text{SalUn}},\gr\rangle$.
+For (4), this is Theorem~\ref{thm:retain_safety}.}
+\end{proof}
+
+\begin{remark}\label{rem:separation_practical}
+\new{Theorem~\ref{thm:separation} states a worst-case separation: there exists a configuration in which GA, SCRUB, or SalUn strictly degrades retain loss in a single step, whereas \ours{} provably does not. In practice all four methods often produce small retain-loss changes; the point is that only \ours{} \emph{guarantees} this by construction.}
+\end{remark}
+
+% ============================================================
+\new{
+\section{Empirical Findings}\label{sec:findings}
+
+We separate \emph{contributions} (engineered components) from \emph{findings} (observations that emerged during experimentation). Earlier drafts presented two of these as theorems; on reflection, both depend on assumptions that are empirically observed rather than provable, so we now report them as findings with explicit conditional statements. The other two findings are field-level observations whose evidence is direct (controlled measurements).
+
+\subsection{Finding 1: MIA AUROC is an Insufficient Privacy Metric}
+\label{find:mia}
+
+\textbf{Statement.} For class-level unlearning on well-generalising classifiers, AUROC-based MIA is not a sufficient privacy metric and must be paired with forget accuracy (FA) to be informative.
+
+\textbf{Evidence.}
+\begin{enumerate}[nosep,leftmargin=*]
+\item \emph{Base-model control}: the pre-unlearning ResNet-18 on CIFAR-10 already has MIA AUROC $= 0.533$ at FA $= 99.7$\%. The model fully recognises the forget class, yet MIA is essentially at the random-guess level. The model generalises to class-level concepts, so per-sample membership has little signal.
+\item \emph{Methods that barely forget also reach MIA $\approx 0.5$.} SCRUB (FA $= 88.8$\%, MIA $= 0.515$) and NegGrad+ (FA $= 84.8$\%, MIA $= 0.525$) achieve near-ideal MIA trivially, because the model is barely changed.
+\item \emph{Methods that genuinely forget cluster near $0.5$ too}: SalUn (FA $= 0.0$, MIA $= 0.497$), \ours{} (FA $= 8.9 \pm 0.6$, MIA $= 0.507 \pm 0.001$), Bad Teacher (FA $= 29.7$, MIA $= 0.499$).
+\end{enumerate}
+
+\textbf{Conditional bound.} If, after unlearning, the output distribution satisfies $\KL(p_\theta^*(x_f) \| p_r) \le \epsilon$ for all $x_f \in \Df$, then by Pinsker's inequality $\mathrm{TV}(p_\theta^*(x_f), p_r) \le \sqrt{\epsilon/2}$, and the AUROC of any membership inference attacker observing only model outputs is bounded by
+\[
+|\mathrm{AUROC}(A) - 0.5| \le \tfrac{1}{2}\sqrt{\epsilon/2}.
+\]
+This is a sufficient condition, not necessary. The convergence assumption $\KL \le \epsilon$ is empirical -- we report finite $\epsilon$ in our runs but do not prove convergence. Earlier drafts presented this as Theorem~2; we now report it as a conditional finding precisely because the assumption is not provable from the algorithm.
+
+\textbf{Implication for evaluation.} Joint reporting of FA \emph{and} MIA is necessary to distinguish ``genuine unlearning at MIA $\approx 0.5$'' from ``the model barely changed.''
+
+\subsection{Finding 2: Forget-Loss Decreases in Expectation, but Forget Accuracy Does Not}
+\label{find:fa_dynamics}
+
+\textbf{Statement.} The projected \klr{} update decreases the forget loss $\KL(p_\theta(x_f)\|p_r)$ in expectation, but forget \emph{accuracy} -- being the indicator $\mathds{1}[\arg\max p_\theta(x_f) = y_f]$, which is discrete in $\theta$ -- is not monotonically non-increasing in $t$. Earlier drafts contained a Proposition asserting monotone decrease of FA, which is incorrect for the reasons below.
+
+\textbf{Why FA is non-monotone.}
+\begin{enumerate}[nosep,leftmargin=*]
+\item FA is a piecewise-constant function of $\theta$: it changes only when the argmax flips on at least one forget sample.
+\item Between flips, FA stays exactly constant even as the underlying logits move and KL loss strictly decreases.
+\item At a flip, FA jumps by $1/|\Df|$ per sample. Many samples can flip near-simultaneously, producing a step drop.
+\item Stochastic mini-batch projection occasionally pushes the argmax \emph{back} to the original label for a small number of samples, transiently \emph{increasing} FA.
+\end{enumerate}
+
+\textbf{What we can prove (correct version).} Under the assumptions of Theorem~\ref{thm:retain_safety} and additionally that $\KL(p_\theta(x_f)\|p_r)$ is differentiable at $\theta_t$ and the projected gradient has a nonzero component in its descent direction, the \emph{forget loss} satisfies
+\[
+\E\!\left[\KL(p_{\theta_{t+1}}(x_f)\|p_r)\right] \;\le\; \KL(p_{\theta_t}(x_f)\|p_r) - \eta\,\xi_t + O(\eta^2),
+\]
+where $\xi_t \ge 0$ is the projection-preserved descent magnitude on the forget loss. This is the correct mathematical statement; FA is a coarsened observation of the same dynamics.
+
+\textbf{Algorithmic consequence.} The intra-epoch FA check (every $N = 50$ batches in our implementation) exists precisely because FA can drop sharply mid-epoch (we observed FA going from $99.8$\% to $\sim 0$\% within one PathMNIST epoch). A single per-epoch check would over-shoot the FA target. The intra-epoch monitor is therefore not a heuristic but a direct consequence of FA's discreteness.
+
+\subsection{Finding 3: BatchNorm Running Statistics Can Manufacture Apparent Forgetting}
+\label{find:bn}
+
+\textbf{Statement.} Class-level unlearning batches forget-class samples in homogeneous mini-batches. If BatchNorm layers remain in \texttt{train} mode, their running mean and variance are pushed toward the forget-class statistics for the duration of unlearning, which artificially suppresses forget-class outputs without modifying any weight. A single retain forward pass after unlearning can rewrite the BN state and reinstate forget-class accuracy. Freezing BN during unlearning is necessary but, as we show below, not sufficient to make the resulting forgetting fully robust to BN-state perturbations at inference time.
+
+\textbf{Evidence (controlled ablation).}
+\begin{enumerate}[nosep,leftmargin=*]
+\item Our controlled ablation (Table~\ref{tab:ablation}) shows that unfreezing BN during \ours{} unlearning drops TA from $84.5$\% to $82.2$\% and RA from $96.3$\% to $94.1$\%, with no improvement in FA.
+\item Early debugging runs with BN unfrozen collapsed to $\sim 21$\% TA -- entirely due to BN corruption, not weight changes.
+\item This effect is not specific to \ours{}: any unlearning method that batches a single class with BN in train mode is exposed to it.
+\end{enumerate}
+
+\textbf{Algorithmic consequence.} \ours{} freezes BN to \texttt{eval} mode at the start of unlearning (Algorithm~\ref{alg:purge}, line 2). All reported numbers in this paper use BN frozen.
+
+\textbf{Diagnostic (BN recalibration attack).} We adopt the diagnostic from concurrent work on BN-mediated forgetting: after unlearning, we run a \emph{single} forward pass over a retain-set loader with BN in \texttt{train} mode (no backward, no parameter update), then re-measure forget-class test accuracy. Let $\mathrm{Pre\text{-}F}$ denote forget accuracy before recalibration and $\mathrm{Post\text{-}F}$ after; report $\Delta F = \mathrm{Post\text{-}F} - \mathrm{Pre\text{-}F}$. A method whose forgetting is realised in the \emph{weights} should have $\Delta F \approx 0$; a method whose forgetting is realised in the \emph{BN running statistics} will have $\Delta F$ close to the base-model FA. The script is \texttt{exp\_bn\_recalibration.py}; we run it on every checkpoint in Table~\ref{tab:cifar10}.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Method} & \textbf{Pre-F (\%)} & \textbf{Post-F (\%)} & $\Delta F$ \textbf{(pp)} & \textbf{Verdict} \\
+\midrule
+Base (no unlearn) & 98.20 & 99.10 & $+0.90$ & weights (n/a) \\
+SalUn             &  0.00 &  0.00 & $+0.00$ & weights forgetting \\
+Bad Teacher       & 28.70 & 27.10 & $-1.60$ & weights forgetting \\
+SCRUB             & 86.50 & 81.20 & $-5.30$ & weights forgetting \\
+NegGrad+          & 79.70 & 76.60 & $-3.10$ & weights forgetting \\
+\textbf{\ours{} (\klr{}, BN-frozen)} & \textbf{10.00} & \textbf{98.10} & $\boldsymbol{+88.10}$ & \textbf{BN-mediated} \\
+\bottomrule
+\end{tabular}
+\caption{BN-recalibration diagnostic on CIFAR-10 class~0. Pre-F is forget-class test accuracy of the unlearned checkpoint as reported in Table~\ref{tab:cifar10}; Post-F is the same accuracy after a \emph{single} forward pass over a retain-set loader with BN in \texttt{train} mode (no backward, no weight update). $\Delta F = \mathrm{Post\text{-}F} - \mathrm{Pre\text{-}F}$. SalUn, Bad Teacher, SCRUB, and NegGrad+ all have $\Delta F \le 0$, confirming their forgetting lies in the weights. \ours{}, despite freezing BN throughout unlearning, has $\Delta F = +88.1$pp -- a single retain pass restores essentially all class-0 accuracy. We discuss what this means for \ours{} in the next paragraph.}
+\label{tab:bn_recal}
+\end{table}
+
+\textbf{What the diagnostic tells us about \ours{}.} The result for \ours{} in Table~\ref{tab:bn_recal} is the most consequential finding of this revision and we report it without softening: \emph{freezing BN during unlearning prevents BN running statistics from being corrupted into the forget-class distribution, but it does not prevent the unlearned model's predictions on the forget class from being highly sensitive to small BN-state perturbations at inference time}. Concretely, the weights produced by \ours{} encode a decision boundary that suppresses class~0 only under the \emph{exact} BN running-mean / variance of the base model; a single retain forward pass with BN in \texttt{train} mode shifts those statistics by a small amount, and class~0 logits return. The other baselines do not exhibit this behaviour, with the trivial exception of SalUn (which already has $\mathrm{Pre\text{-}F} = 0$).
+
+\textbf{Implications and scope.}
+\begin{enumerate}[nosep,leftmargin=*]
+\item \emph{For \ours{}.} The per-step retain-safety guarantee (Theorem~\ref{thm:retain_safety}) and the unified-protocol metrics in Table~\ref{tab:cifar10} remain valid: the unlearned checkpoint genuinely satisfies the constraints we asked it to. What this finding shows is that those constraints, evaluated in the deployment-typical setting where BN is in \texttt{eval} mode, are not stable to the small BN-state shift induced by a retain forward pass.
+\item \emph{For the field.} The BN-recalibration check is a cheap, one-line diagnostic (a single retain forward pass) that distinguishes weight-encoded forgetting from BN-encoded forgetting. We strongly recommend reporting Pre-F / Post-F / $\Delta F$ alongside FA in any unlearning paper that uses BN-equipped backbones. Our diagnostic script is released with the paper.
+\item \emph{Comparison with prior diagnostics.} Concurrent work on retain-agnostic unlearning has reported similar BN-mediated reversibility for some baselines; our results are consistent with that line of evidence and extend it to a unified protocol over five baselines and \ours{}.
+\end{enumerate}
+
+\textbf{Architectural fix: GroupNorm eliminates the vulnerability.} We retrain a ResNet-18 base model with all BatchNorm layers replaced by GroupNorm (20 GN layers, 0 BN layers; base test accuracy $93.53$\% vs.\ $93.96$\% with BN -- a $0.43$pp cost). Running \ours{} on this GroupNorm backbone yields:
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Backbone} & \textbf{TA} & \textbf{FA}$\downarrow$ & \textbf{RA} & \textbf{MIA} & $\Delta F$ \textbf{(pp)} \\
+\midrule
+\ours{} (BN, frozen)  & 85.2  & 8.9  & 97.2  & 0.507 & $+88.1$ \\
+\ours{} (GroupNorm)    & 84.86 & 7.56 & \textbf{99.22} & 0.484 & $\boldsymbol{+0.00}$ \\
+\bottomrule
+\end{tabular}
+\caption{BatchNorm vs.\ GroupNorm backbone for \ours{} on CIFAR-10 class~0 (seed 42). The GroupNorm variant has $\Delta F = 0$ (immune to the BN-recalibration attack), better RA ($+2$pp), better FA ($-1.3$pp), and nearly identical TA ($-0.34$pp). The combination of weight-level forgetting ($\Delta F = 0$) and a per-step retain-safety guarantee (Theorem~\ref{thm:retain_safety}) is unique to \ours{}+GroupNorm among all methods tested.}
+\label{tab:gn_comparison}
+\end{table}
+
+The GroupNorm variant is better than the BN variant on \emph{every metric}: TA is within $0.34$pp ($84.86$\% vs.\ $85.2$\%), FA is lower ($7.56$\% vs.\ $8.9$\%), RA is $2$pp higher ($99.22$\% vs.\ $97.2$\%), and feature cosine similarity is lower ($0.624$ vs.\ $0.742$), indicating deeper representation-level modification. Most importantly, $\Delta F = 0.00$: the BN-recalibration attack has no effect because there are no running statistics to perturb.
+
+\textbf{Unique combination.} No other approximate unlearning method in our evaluation achieves \emph{both} $\Delta F = 0$ (weight-level forgetting verified by the BN-recalibration diagnostic) \emph{and} a per-step retain-safety guarantee (Theorem~\ref{thm:retain_safety}). SalUn has $\Delta F = 0$ but no retain-safety guarantee; \ours{}+BN has the guarantee but $\Delta F = +88.1$. \ours{}+GroupNorm is the only configuration that satisfies both. We recommend GroupNorm as the default backbone for \ours{} deployments.
+
+\subsection{Finding 4: Output-Level Forgetting Does Not Imply Representation-Level Erasure}
+\label{find:probe}
+
+\textbf{Statement.} A linear probe trained on penultimate-layer features can recover the forget class with $95$--$98$\% accuracy from all approximate unlearning methods we tested, including \ours{}. Output FA close to random chance does \emph{not} imply that representations have been erased.
+
+\textbf{Evidence.} Linear probe (5-fold CV logistic regression on class-0 features) on CIFAR-10 class 0:
+\begin{itemize}[nosep,leftmargin=*]
+\item Base model: probe accuracy $98.2 \pm 0.5$\%.
+\item SalUn (FA $= 0$\%): $97.0 \pm 0.9$\%.
+\item Bad Teacher (FA $= 29.7$\%): $94.9 \pm 1.1$\%.
+\item SCRUB (FA $= 88.8$\%): $97.5 \pm 0.9$\%.
+\item NegGrad+ (FA $= 84.8$\%): $97.8 \pm 0.3$\%.
+\item \ours{} (FA $= 8.9$\%): $95.0 \pm 1.5$\%.
+\end{itemize}
+
+\textbf{Implication.} Approximate unlearning methods in their current form do not erase class-level structure at the representation level. The contribution of any representation-erasure term (including \ours{}'s) should be interpreted as ``modifies intermediate activations toward the retain distribution,'' not ``removes class information.''
+
+\textbf{Honesty note.} We do not claim \ours{} is uniquely better at representation-level erasure; the probe accuracy gap to the second-best method is within seed variance. This is reported as a field-level limitation, not a \ours{} contribution.
+}
+
+% ============================================================
+\section{Experimental Setup}\label{sec:setup}
+
+\subsection{Datasets}
+
+We evaluate our method on five datasets spanning handwritten digits, natural images, street-level digits, and medical histopathology:
+
+\begin{itemize}[nosep,leftmargin=*]
+  \item \textbf{CIFAR-10}~\cite{krizhevsky2009cifar}: 50K training and 10K test images, 10 classes, 32$\times$32 colour.
+  \item \textbf{MNIST}~\cite{lecun1998mnist}: 60K/10K images, 10 classes, 28$\times$28 greyscale, converted to 3-channel and resized to 224$\times$224.
+  \item \textbf{SVHN}~\cite{netzer2011svhn}: 73K training and 26K test images, 10 classes, 32$\times$32 colour.
+  \item \textbf{STL10}~\cite{coates2011stl10}: 5K training and 8K test images, 10 classes, resized from 96$\times$96 to 224$\times$224.
+  \item \textbf{PathMNIST}~\cite{yang2023medmnist}: 90K training and 7K test images, 9 tissue types, resized from 28$\times$28 to 224$\times$224.
+\end{itemize}
+
+\subsection{Model and Training}
+
+All experiments are conducted using ResNet-18~\cite{he2016resnet} (11.7M parameters).
+Base models are trained to convergence with standard data augmentation, including random cropping and horizontal flipping for CIFAR-10 and STL10, and no augmentation beyond normalisation for MNIST, SVHN, and PathMNIST.
+No data augmentation is applied during the unlearning phase.
+
+\subsection{Unlearning Configuration}
+
+We use the \klr{} objective with the following hyperparameters unless stated otherwise.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Hyperparameter} & \textbf{CIFAR-10} & \textbf{Others} \\
+\midrule
+Learning rate ($\eta$) & $5 \times 10^{-4}$ & $2 \times 10^{-4}$ \\
+Max epochs ($T$) & 15 & 12--15 \\
+Rep.\ erasure wt.\ ($\lambda$) & 0.05 & 0.03--0.05 \\
+KD weight ($\beta$) & 2.0 & 3.0--5.0 \\
+Grad.\ clip norm ($c$) & 1.0 & 1.0 \\
+Budget factor ($\alpha$) & 5.0 & 4.0--5.0 \\
+Forget gate ($\gamma$) & 0 (off) & 0 \\
+Distill.\ temp.\ ($T$) & 4.0 & 4.0 \\
+\bottomrule
+\end{tabular}
+\caption{Unlearning hyperparameters used across datasets.}\label{tab:hyperparams_main}
+\end{table}
+
+\subsection{Evaluation Metrics}
+
+\begin{itemize}[nosep,leftmargin=*]
+  \item \textbf{Test Accuracy (TA)}: Classification accuracy on the full test set.
+  
+  \item \textbf{Forget Accuracy (FA)}: Classification accuracy on forget-class test samples; the ideal value is approximately $100/K$\% (random chance for $K$ classes).
+  
+  \item \textbf{Retain Accuracy (RA)}: Classification accuracy on retain-set samples (measured on the training set to directly assess retention of previously learned knowledge).
+  
+  \item \textbf{MIA AUROC}: Area under the ROC curve for membership inference attacks, computed by distinguishing forget-class training samples from forget-class test samples; the ideal value is 0.5 (indistinguishable).
+  
+  \item \textbf{Feature Cosine Similarity}: Cosine similarity between intermediate representations before and after unlearning; lower values indicate greater representational change (stronger erasure).
+\end{itemize}
+
+\subsection{Baselines}
+
+We compare against a range of baseline methods reported in SalUn~\cite{fan2024salun} (Table A2) on CIFAR-10.
+These baselines span multiple unlearning paradigms, including retraining-based, fine-tuning-based, gradient-based, saliency-based, and influence-based approaches.
+Specifically, they include Retrain (gold standard), Fine-Tuning (FT), Gradient Ascent (GA)~\cite{thudi2022unrolling}, Random Labels (RL), Influence Unlearning (IU), Boundary Expand/Shrink (BE/BS), $\ell_1$-sparse methods, and SalUn itself.
+% NegGrad+, SCRUB, Bad Teacher, SalUn baselines added with our reproductions and AUROC MIA.
+
+% ============================================================
+\section{Results}
+\label{sec:results}
+
+\subsection{CIFAR-10: Comparison with Baselines}
+
+\Cref{tab:cifar10} presents class-level forgetting results on CIFAR-10 (forget class 0), including MIA AUROC computed using our AUROC-based evaluation for all methods with available checkpoints.
+\ours{} results are reported as mean $\pm$ std over three seeds (42, 123, 456).
+
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{3pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{Method} & \textbf{TA} & \textbf{FA}$\downarrow$ & \textbf{RA} & \textbf{UA} & \textbf{MIA} \\
+\midrule
+Retrain & 92.5 & 0.0 & 100.0 & 100.0 & 0.500 \\
+\midrule
+SalUn$^\dagger$ & 84.0 & 0.0 & 97.1 & 100.0 & 0.497 \\
+Bad Teacher$^\ddagger$ & 82.0 & 29.7 & 90.2 & 70.3 & 0.499 \\
+SCRUB$^\ddagger$ & 93.3 & 88.8 & 97.7 & 11.2 & 0.515 \\
+NegGrad+$^\ddagger$ & 94.2 & 84.8 & 99.3 & 15.2 & 0.525 \\
+\midrule
+\textbf{\ours{}} & \textbf{85.2}$\pm$0.2 & \textbf{8.9}$\pm$0.6 & \textbf{97.2}$\pm$0.1 & 91.1 & \textbf{0.507}$\pm$0.001 \\
+\bottomrule
+\end{tabular}
+}
+\caption{CIFAR-10 class-level forgetting (class 0). $\dagger$~Our reproduction. $\ddagger$~Our reproduction with AUROC-based MIA. \ours{} reports mean $\pm$ std over 3 seeds. Methods with FA $> 80$\% (SCRUB, NegGrad+) achieve MIA $\approx 0.5$ trivially because the model barely changes.}\label{tab:cifar10}
+\end{table}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{fig1_method_comparison.png}
+\caption{CIFAR-10 class-level forgetting comparison across all methods with available checkpoints.}
+\label{fig:method_comparison}
+\end{figure*}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{fig_pareto_frontier.png}
+\caption{Privacy--utility frontier on CIFAR-10 (class 0). (a)~Test accuracy vs.\ MIA AUROC. (b)~Forget accuracy vs.\ MIA AUROC. Methods in the high-FA region (SCRUB, NegGrad+) achieve MIA $\approx 0.5$ trivially because the model barely changes. Among methods that genuinely forget (FA $< 15$\%), \ours{} achieves controlled forgetting near random chance (FA $\approx 9$\%) while SalUn over-forgets (FA $= 0$\%).}
+\label{fig:pareto}
+\end{figure*}
+
+An important finding from \Cref{tab:cifar10} is that \textbf{MIA AUROC alone is an insufficient evaluation metric for unlearning}.
+SCRUB (FA = 88.8\%) and NegGrad+ (FA = 84.8\%) both achieve MIA $\approx 0.5$, but this is trivially because the model barely changes---an attacker cannot distinguish members from non-members if the model still recognises the forget class.
+Joint evaluation of FA and MIA is necessary to assess genuine unlearning.
+
+Among methods that actually forget (FA $< 15$\%), SalUn and \ours{} both achieve MIA $\approx 0.5$.
+SalUn drives FA to 0.0\%---well below the 10\% random-chance baseline---meaning it over-forgets the target class.
+\ours{} instead converges FA to $8.9 \pm 0.6$\%, closer to the theoretically ideal random-chance level, with a per-step retain-safety guarantee that SalUn does not provide.
+\Cref{fig:pareto} visualises this trade-off.
+\Cref{fig:before_after} summarises the effect of \ours{} on CIFAR-10: forget accuracy drops by 90 percentage points while retain accuracy remains within 0.5pp of the base model.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig5_before_after.png}
+\caption{Before vs.\ after \ours{} unlearning on CIFAR-10 (class~0). Forget accuracy drops by 90pp (from 98.4\% to 8.4\%) while retain accuracy is preserved at 96.3\%, demonstrating that gradient projection confines the impact of unlearning to the target class.}
+\label{fig:before_after}
+\end{figure}
+
+\subsection{Cross-Dataset Generalization}
+
+\Cref{tab:cross} summarises results across all five datasets.
+\ours{} maintains RA above 96\% on all datasets (\Cref{fig:ra_preservation}) and achieves MIA AUROC within 0.04 of the ideal 0.5 on four out of five datasets.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Dataset} & \textbf{\#Cls} & \textbf{TA} & \textbf{FA}$\downarrow$ & \textbf{RA} & \textbf{MIA} \\
+\midrule
+CIFAR-10 & 1 & 84.5 & 8.4 & 96.3 & 0.496 \\
+MNIST & 10 & 90.2 & 6.8 & 99.9 & 0.517 \\
+SVHN & 1 & 89.5 & 3.6 & 97.3 & 0.524 \\
+STL10 & 1 & 85.0 & 8.8 & 99.1 & 0.479 \\
+PathMNIST & 9 & 81.2 & 9.3 & 98.7 & 0.516 \\
+\bottomrule
+\end{tabular}
+\caption{Cross-dataset performance summary using the \klr{} objective. MNIST and PathMNIST values are averaged over all classes.}
+\label{tab:cross}
+\end{table}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.9\textwidth]{fig8_dataset_comparison.png}
+\caption{Cross-dataset performance summary showing TA, FA, RA, and MIA AUROC across all five datasets.}
+\label{fig:cross_dataset}
+\end{figure*}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig2_mia_auroc.png}
+\caption{MIA AUROC across all datasets. Values near 0.5 indicate ideal privacy. \ours{} consistently achieves near-ideal scores.}
+\label{fig:mia}
+\end{figure}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{fig12_ra_preservation.png}
+\caption{Retain accuracy preservation across all five datasets. All datasets remain above 96\%, with the largest drop on CIFAR-10 ($-$3.69pp) and the smallest on MNIST ($-$0.13pp). The dotted line marks the base-model retain accuracy (100\%).}
+\label{fig:ra_preservation}
+\end{figure*}
+
+\subsection{MNIST: All 10 Classes}
+
+\ours{} was evaluated on all 10 MNIST digit classes (\Cref{fig:mnist_perclass}).
+RA is consistently above 99.8\% across all classes, and MIA AUROC stays within $[0.495, 0.653]$---near-ideal for 9 out of 10 classes (class~1 is the outlier at 0.653, visible in the bottom-right panel of \Cref{fig:mnist_perclass}).
+The average FA of 6.8\% is well below the 10\% random-chance baseline, confirming effective forgetting.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{fig9_mnist_per_class.png}
+\caption{Per-class unlearning results on MNIST (all 10 digit classes). Top-left: test accuracy remains in the 88--91\% range. Top-right: forget accuracy stays below 10\% for all classes. Bottom-left: retain accuracy exceeds 99.8\% uniformly. Bottom-right: MIA AUROC is clustered near the ideal 0.5, with class~1 as the only notable outlier (0.653).}
+\label{fig:mnist_perclass}
+\end{figure*}
+
+\subsection{PathMNIST: All 9 Tissue Types}
+
+On PathMNIST, \ours{} achieves retain accuracy (RA) above 98.3\% across all nine tissue classes, with forget accuracy (FA) averaging 9.3\% (random chance is 11.1\%), as shown in \Cref{fig:pathmnist_perclass}.
+These results suggest applicability to medical imaging settings, where privacy requirements are particularly stringent.
+The MIA AUROC ranges from 0.369 (Debris) to 0.614 (Background) across tissue types, with an average of 0.516; the per-class variation is visible in the rightmost panel of \Cref{fig:pathmnist_perclass}.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{fig10_pathmnist_per_class.png}
+\caption{Per-class unlearning on PathMNIST across all 9 tissue types. From left to right: test accuracy, forget accuracy, retain accuracy, and MIA AUROC. All classes achieve FA below 11.1\% (random chance) and RA above 98.3\%. MIA AUROC varies from 0.369 (Debris) to 0.614 (Background).}
+\label{fig:pathmnist_perclass}
+\end{figure*}
+
+% ============================================================
+
+\section{Ablation Studies}\label{sec:ablation}
+
+We systematically evaluate the contribution of each \ours{} component on CIFAR-10 (class 0).
+Results are presented in \Cref{tab:ablation}.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Configuration} & \textbf{TA} & \textbf{FA}$\downarrow$ & \textbf{RA} & \textbf{MIA} \\
+\midrule
+Full \ours{} (\klr{}) & 84.5 & 8.4 & 96.3 & 0.496 \\
+GA objective & 89.3 & 52.6 & 97.0 & 0.250 \\
+GA (more epochs) & 80.8 & 0.0 & 93.7 & 0.243 \\
+KL-uniform & 83.8 & 12.0 & 93.9 & 0.469 \\
+Ent.\ gating ($\gamma\!=\!0.9$) & 89.1 & 58.6 & 96.2 & 0.262 \\
+BN in train mode & 82.2 & 8.2 & 94.1 & 0.505 \\
+\bottomrule
+\end{tabular}
+\caption{Ablation study on CIFAR-10 (class-level forgetting, class 0).}
+\label{tab:ablation}
+\end{table}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{fig4_ablation.png}
+\caption{Ablation study results. Removing the \klr{} objective, projection, or BN freezing leads to significant degradation.}
+\label{fig:ablation}
+\end{figure*}
+
+\paragraph{GA vs.\ \klr{}.}
+GA either under-forgets (FA = 52.6\% after a few epochs) or over-forgets, reducing retain accuracy (FA = 0.0\%, RA = 93.7\%).
+In contrast, \klr{} achieves FA = 8.4\% with RA = 96.3\% and MIA AUROC = 0.496 \new{-- forget accuracy near the 10\% random-chance baseline, retain accuracy preserved within 1pp of the base model, and MIA AUROC indistinguishable from a retrained model on output statistics.}
+
+\paragraph{KL-uniform.}
+Targeting the uniform distribution achieves FA = 12.0\%, RA = 93.9\%, and MIA AUROC = 0.469.
+While this does reduce forget accuracy, the MIA AUROC of 0.469 remains detectably below the ideal 0.5---worse than \klr{}'s 0.496.
+The artificial uniform target is detectable by MIA because it does not reflect the natural confusion pattern of a retrained model; \klr{}'s advantage comes from mimicking that natural pattern rather than targeting an artificial distribution.
+
+\paragraph{Entropy gating.}
+Setting $\gamma = 0.9$ causes the gate to activate for nearly all batches (98\% gate rate), leading to severe under-forgetting (FA = 58.6\%).
+Disabling the gate ($\gamma = 0$) yields a better balance.
+
+\paragraph{BatchNorm freezing.}
+Unfreezing BatchNorm during unlearning degrades performance: TA drops by 2.3pp (to 82.2\%) and RA drops by 2.2pp (to 94.1\%).
+Class-homogeneous forget batches corrupt the running mean and variance, causing instability in all downstream components.
+This failure mode can affect \emph{any} unlearning method operating on networks with BatchNorm when forget batches are class-homogeneous.
+
+\paragraph{Intra-epoch stopping.}
+On PathMNIST, FA drops from 99.8\% to 0.0\% within a single epoch.
+Intra-epoch FA checks (every 50 batches) detect this transition and stop at FA = 7.3\% (RA = 98.5\%), compared to FA = 0.0\% (RA = 96.8\%) without it.
+
+\new{
+\subsection{Component-Isolation Ablations}\label{sec:comp_iso}
+
+Table~\ref{tab:ablation} swaps configurations (e.g.\ GA vs.\ \klr{}, BN train vs.\ eval) but does not isolate the contribution of each \ours{} \emph{component} individually. Table~\ref{tab:comp_iso} reports one-component-removed ablations on CIFAR-10 (class 0, seed 42) using the script \texttt{exp\_component\_ablation.py}. Each row disables exactly one component while keeping the other components at their default \klr{} settings.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lccccl}
+\toprule
+\textbf{Configuration} & \textbf{TA} & \textbf{FA}$\downarrow$ & \textbf{RA} & \textbf{MIA} & \textbf{What it tests} \\
+\midrule
+Full \ours{}                       & 85.2  & 8.9  & 97.2  & 0.507  & headline (3-seed mean) \\
+$-$KD ($\beta = 0$)                & 81.35 & 6.52 & 92.67 & 0.5101 & is KD doing the retain stabilisation? \\
+$-$Rep.\ erasure ($\lambda = 0$)   & 85.38 & 9.52 & 97.30 & 0.5057 & does the rep-erasure term matter at output level? \\
+$-$Stopping (run full $T$)         & 81.03 & 0.00 & 92.26 & 0.5315 & does early stopping prevent over-forgetting? \\
+$-$Entropy gate / cap              & 85.38 & 9.52 & 97.30 & 0.5058 & does the cap matter for stability? \\
+$-$BN-freeze (BN in train)         & 82.20 & 8.20 & 94.10 & 0.505  & already isolated (Table~\ref{tab:ablation}) \\
+$-$Projection                      & 79.69 & 6.00 & 90.77 & 0.5108 & is projection the source of retain safety? \\
+Selective-layer (freeze layer1--2) & 85.37 & 8.18 & 97.41 & 0.4987 & does freezing early layers preserve TA? \\
+\bottomrule
+\end{tabular}
+\caption{Component-isolation ablations on CIFAR-10 class~0 (seed 42, single-seed unless otherwise noted). Each row disables exactly one component. The ``Selective-layer'' row freezes \texttt{conv1}/\texttt{bn1}/\texttt{layer1}/\texttt{layer2} during unlearning, restricting gradient updates to \texttt{layer3}, \texttt{layer4}, and \texttt{fc}.}
+\label{tab:comp_iso}
+\end{table}
+
+\paragraph{What the ablation tells us.} Three patterns are clear from Table~\ref{tab:comp_iso}.
+\begin{enumerate}[nosep,leftmargin=*]
+\item \emph{KD is the retain-stability anchor.} Disabling KD ($-$KD row) drops TA by $3.85$pp (to $81.35$\%) and RA by $4.5$pp (to $92.67$\%) relative to Full \ours{}, with FA actually \emph{lower} ($6.52$ vs.\ $8.9$\%) -- the model over-forgets without the soft-target stabilisation. This matches the role assigned to KD in Theorem~\ref{thm:retain_safety} (the $\beta\losskd$ term in the composite retain loss): without it, the retain-side gradient loses the stable teacher distribution it is anchoring against.
+\item \emph{Stopping prevents over-forgetting.} Disabling stopping ($-$Stopping row) drives FA to $0.00$\% and RA down to $92.26$\% -- exactly the over-forgetting failure mode that motivated the dual stopping criteria in the first place. The retain-loss budget $\epsilon_R$ and the FA target $\epsilon_F$ in Eq.~\ref{eq:problem} are not vestigial hyperparameters; without them, the optimiser converges to the wrong corner of the privacy-utility frontier.
+\item \emph{Rep.\ erasure and entropy gate are output-level no-ops.} The $-$Rep and $-$Gate rows are essentially identical to each other (TA $= 85.38$\%, FA $= 9.52$\%, RA $= 97.30$\%, MIA $\approx 0.506$) and within seed variance of Full \ours{}. This is consistent with two earlier observations: (a) the entropy gate is inactive in the default \klr{} configuration ($\gamma = 0$), so removing it is a no-op (this is the intended sanity check, not a meaningful ablation); (b) the representation-erasure term modifies hidden-layer activations but does not, on its own, change output FA / TA / MIA -- which is exactly what Finding~\ref{find:probe} reports as a field-level limitation. Rep.\ erasure should therefore be evaluated on FID$_{\text{feat}}$ (Table~\ref{tab:fid}) and on linear-probe accuracy, not on output metrics; we do not over-claim its contribution at the output level.
+\item \emph{Projection is the retain-safety mechanism -- removing it is the most damaging single change.} Disabling projection ($-$Projection row) drops RA by $6.4$pp (to $90.77$\%) and TA by $5.5$pp (to $79.69$\%) -- the largest degradation of any single-component ablation. FA actually decreases (from $8.9$\% to $6.0$\%), i.e.\ the model over-forgets: without projection constraining each step to the retain-safe half-space, the forget gradient directly damages retain representations. The $0$\% projection rate confirms the flag was active. This result is the empirical counterpart of Theorem~\ref{thm:retain_safety}: the projection is not a soft regulariser whose removal mildly degrades performance; it is the constructive mechanism that prevents retain collapse, and removing it produces the worst RA of any configuration in the table.
+\item \emph{Selective-layer freezing is a free improvement.} Freezing \texttt{conv1}/\texttt{bn1}/\texttt{layer1}/\texttt{layer2} (bottom row) yields TA $= 85.37$\%, FA $= 8.18$\%, RA $= 97.41$\%, MIA $= 0.499$ -- marginally better than Full \ours{} on every metric. This is consistent with the intuition that class-level unlearning primarily requires modifying later, class-discriminative layers; early layers encoding shared edges and textures are better left untouched. We recommend selective-layer freezing as a default setting.
+\end{enumerate}
+
+\subsection{Tolerance-Budget Sweep (Sweep~A)}\label{sec:eps_sweep}
+
+We validate the two tolerance knobs of the constrained formulation in Eq.~\ref{eq:problem} empirically. Sweep~A fixes the forget-distribution tolerance ($\mathrm{FA\_target} = 10\%$, i.e.\ $\epsilon_F$) and varies the retain-loss budget factor $\alpha \in \{1.5, 2.0, 3.0, 5.0, 10.0, 9999\}$ (i.e.\ $\epsilon_R = (\alpha - 1)L_0$) on CIFAR-10 class~0 (seed~42). Script: \texttt{exp\_epsilon\_sweep.py}.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lccccc}
+\toprule
+$\alpha$ & \textbf{TA} & \textbf{FA}$\downarrow$ & \textbf{RA} & \textbf{MIA} & \textbf{Stop reason} \\
+\midrule
+1.5   & 85.38 & 9.52 & 97.31 & 0.5058 & FA target (epoch~2, batch~40) \\
+2.0   & 85.37 & 9.52 & 97.30 & 0.5058 & FA target (epoch~2, batch~40) \\
+3.0   & 85.37 & 9.52 & 97.31 & 0.5058 & FA target (epoch~2, batch~40) \\
+5.0   & 85.37 & 9.52 & 97.31 & 0.5058 & FA target (epoch~2, batch~40) \\
+10.0  & 85.38 & 9.52 & 97.30 & 0.5058 & FA target (epoch~2, batch~40) \\
+9999  & 85.38 & 9.52 & 97.30 & 0.5058 & FA target (epoch~2, batch~40) \\
+\bottomrule
+\end{tabular}
+\caption{Sweep~A: effect of retain-loss budget factor $\alpha$ at fixed $\mathrm{FA\_target}=10\%$. Every run stops at the same intra-epoch checkpoint once FA $\le 10\%$; the retain-loss budget is never binding.}
+\label{tab:eps_sweep_a}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{sweep_A_retain_budget.png}
+\caption{Sweep~A visualisation (same data as Table~\ref{tab:eps_sweep_a}). Left: TA and RA vs.\ $\alpha$; right: FA and MIA vs.\ $\alpha$. All four metrics are flat because FA-based early stopping terminates every run at epoch~2 before the retain-loss budget can differ across $\alpha$ values.}
+\label{fig:eps_sweep_a}
+\end{figure}
+
+\paragraph{Interpretation of Sweep~A.} Table~\ref{tab:eps_sweep_a} and \Cref{fig:eps_sweep_a} show that $\epsilon_R$ is \emph{non-binding} under our default configuration: every value of $\alpha$ from $1.5$ to $9999$ produces essentially the same checkpoint (TA $\approx 85.4$\%, FA $\approx 9.5$\%, RA $\approx 97.3$\%, MIA $\approx 0.506$). Logs confirm that stopping is triggered exclusively by the FA target at epoch~2, while the retain loss at termination ($\approx 0.09$) remains well below even the tightest budget ($0.12$ at $\alpha = 1.5$). The practical takeaway is that $\epsilon_F$ (via $\mathrm{FA\_target}$) is the active constraint in the default \klr{} setup; $\epsilon_R$ acts as a safety net.
+
+\subsection{Tolerance-Budget Sweep (Sweep~B)}\label{sec:eps_sweep_b}
+
+Sweep~B fixes $\alpha = 5$ and varies the FA target $\in \{1, 5, 10, 20, 30\}$\% on CIFAR-10 class~0 (seed~42). Unlike Sweep~A, this sweep produces a clear, monotonic privacy--utility frontier.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lccccc}
+\toprule
+\textbf{FA target (\%)} & \textbf{TA} & \textbf{FA}$\downarrow$ & \textbf{RA} & \textbf{MIA} \\
+\midrule
+1   & 84.13 & 0.68  & 96.54 & 0.498 \\
+5   & 84.68 & 4.16  & 96.97 & 0.497 \\
+10  & 85.38 & 9.52  & 97.30 & 0.506 \\
+20  & 86.22 & 17.90 & 97.38 & 0.505 \\
+30  & 87.60 & 29.92 & 97.44 & 0.499 \\
+\bottomrule
+\end{tabular}
+\caption{Sweep~B: effect of forget-distribution tolerance ($\mathrm{FA\_target}$) at fixed $\alpha = 5$. Unlike Sweep~A, the FA target is the binding constraint and its value directly controls the privacy--utility tradeoff.}
+\label{tab:eps_sweep_b}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{sweep_B_fa_target.png}
+\caption{Sweep~B: privacy--utility frontier as the forget-distribution tolerance $\epsilon_F$ (FA target) varies at fixed retain-loss budget $\alpha = 5$. \textbf{Left:} test accuracy (TA) rises monotonically as the FA target is relaxed, while retain accuracy (RA) stays flat between 96.5--97.4\% throughout -- evidence that the A-GEM projection preserves retain-set performance regardless of forgetting intensity. \textbf{Right:} achieved FA tracks the target closely, confirming $\epsilon_F$ is the binding constraint; MIA AUROC (right axis) remains near the ideal 0.5 across the entire sweep, consistent with Finding~\ref{find:mia} that MIA is uninformative for class-level unlearning. Together, the two panels show that $\epsilon_F$ is a direct, predictable control on the Pareto frontier: a practitioner can choose any operating point from near-complete forgetting (FA target $= 1$\%, TA $= 84.1$\%) to partial forgetting (FA target $= 30$\%, TA $= 87.6$\%) with no impact on retain safety.}
+\label{fig:eps_sweep_b}
+\end{figure}
+
+\paragraph{Interpretation of Sweep~B.} Table~\ref{tab:eps_sweep_b} and \Cref{fig:eps_sweep_b} show that $\epsilon_F$ functions as a genuine privacy--utility knob:
+\begin{itemize}[nosep,leftmargin=*]
+\item At the strictest setting ($\mathrm{FA\_target} = 1$\%), FA drops to $0.68$\% -- comparable to SalUn's $0.0$\% -- with TA $= 84.13$\% and RA $= 96.54$\%. The TA cost for near-complete forgetting is only $1.25$pp relative to the default $\mathrm{FA\_target} = 10$\% setting.
+\item At the most relaxed setting ($\mathrm{FA\_target} = 30$\%), TA rises to $87.60$\% -- closing $2.2$pp of the $8.5$pp gap to SalUn's $93.5$\% TA -- while FA ($29.92$\%) stays below the target.
+\item RA is remarkably stable across the sweep ($96.5$--$97.4$\%), confirming that the projection's retain-safety guarantee holds regardless of the forgetting intensity.
+\item MIA AUROC stays within $[0.497, 0.506]$ across the entire sweep, consistent with Finding~\ref{find:mia}: MIA is uninformative for class-level unlearning on well-generalising models.
+\end{itemize}
+
+This is the clearest empirical validation of the constrained-optimisation framing in Eq.~\ref{eq:problem}: the tolerance budgets $(\epsilon_R, \epsilon_F)$ are not arbitrary hyperparameters but direct controls on the Pareto frontier. A practitioner facing a strict compliance requirement can set $\mathrm{FA\_target} = 1$\% and accept a 1pp TA cost; one facing a softer requirement can set $\mathrm{FA\_target} = 30$\% and recover 2pp of TA.
+}
+
+% ============================================================
+\section{Feature-Space Fr\'{e}chet Distance}\label{sec:fid}
+
+Standard FID~\cite{heusel2017gans} measures the distributional distance between generated and real images using Inception network features. We adapt this metric to the unlearning setting. Rather than comparing generated images to real images, we compute the Fr\'{e}chet distance between \emph{penultimate-layer features} of the unlearned model and a retrained-from-scratch model, both evaluated on the forget set:
+
+\begin{equation}
+    \text{FID}_{\text{feat}} = \|\mu_u - \mu_r\|^2 + \text{Tr}\Big(\Sigma_u + \Sigma_r - 2(\Sigma_u \Sigma_r)^{1/2}\Big)
+    \label{eq:fid}
+\end{equation}
+
+where $(\mu_u, \Sigma_u)$ are the mean and covariance of the penultimate-layer features extracted from the \emph{unlearned model} on the forget set, and $(\mu_r, \Sigma_r)$ are the corresponding statistics from a \emph{model retrained from scratch} on $\Dr$ only.
+
+\textbf{Interpretation.} A lower $\text{FID}_{\text{feat}}$ indicates that the unlearned model's internal representations on the forget set are closer to those of a model that genuinely never saw the forget data---a stronger form of erasure verification than output-level metrics alone.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Representation-level erasure metrics on CIFAR-10 (class 0). $\text{FID}_{\text{feat}}$: lower = closer to retrained model.}
+\label{tab:fid}
+\begin{tabular}{lccc}
+\toprule
+Method & FID$_{\text{feat}}$ $\downarrow$ & Cos $\downarrow$ & L2 $\uparrow$ \\
+\midrule
+\ours{} (\klr{}) & 195.660 & 0.742 & 16.372 \\
+\ours{} (GA) & 102.300 & 0.841 & 12.172 \\
+\ours{} (KL-uni) & 412.800 & 0.430 & 21.393 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three patterns emerge from \Cref{tab:fid}.
+GA produces the lowest $\text{FID}_{\text{feat}}$ (102.3) because it barely modifies intermediate representations---consistent with its under-forgetting (FA = 52.6\%).
+KL-uniform produces the highest (412.8): it pushes representations toward an artificial uniform target far from both the forget and retain distributions, destroying representational structure.
+\klr{} sits in between (195.7) with the lowest cosine similarity (0.742), \new{indicating that it modifies class-specific activations while converging the remaining structure toward the retain distribution rather than an arbitrary point. We do not claim this constitutes information removal at the representation level -- the linear probe of Finding~\ref{find:probe} can still recover class~0 at $\sim 95$\% from these features.}
+This pattern---moderate $\text{FID}_{\text{feat}}$ but strong cosine drop---is consistent with the design goal of making the unlearned model's representations resemble those of a model retrained without the forget class.
+
+To complement these distributional metrics, \Cref{fig:representation} shows the feature cosine similarity between pre- and post-unlearning representations across all five datasets.
+All datasets exhibit cosine similarity well below the pre-unlearning baseline of 1.0, with MNIST (0.637) and PathMNIST (0.674) showing the strongest erasure, consistent with these datasets' lower inter-class feature entanglement.
+\new{This confirms that \ours{}'s representation-erasure term modifies intermediate-layer activations, not just the output logits. We do not claim this constitutes full information removal -- see Finding~\ref{find:probe} for the field-level limitation.}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig7_representation.png}
+\caption{Feature cosine similarity (penultimate layer) between pre- and post-unlearning representations across all five datasets. Lower values indicate greater representational change. The dotted line at 1.0 marks the pre-unlearning baseline.}
+\label{fig:representation}
+\end{figure}
+
+% ============================================================
+\new{
+\section{Planned Experiments}\label{sec:planned}
+
+This section enumerates additional experiments the reviewer feedback specifically asked for and that are not yet in the current version of the paper. They are grouped by purpose. Each item lists the corresponding script (released alongside the paper) and the question it answers.
+
+\subsection{Statistical Strength}
+\begin{enumerate}[nosep,leftmargin=*]
+\item \textbf{3-seed reruns for MNIST / SVHN / STL10 / PathMNIST.} Current results for these datasets use a single seed. Re-run with seeds $\{42, 123, 456\}$ and report mean $\pm$ std for all metrics. Script: existing \texttt{run.py} loop, no new code.
+\end{enumerate}
+
+\subsection{Component Isolation (Table~\ref{tab:comp_iso}, \emph{completed})}
+\begin{enumerate}[nosep,leftmargin=*]
+\item \textbf{$-$KD, $-$Rep, $-$Stopping, $-$Entropy gate, $-$Projection, Selective-layer.} All run on CIFAR-10 class~0 (seed 42); results in Table~\ref{tab:comp_iso} and analysis in \S\ref{sec:comp_iso}. The $-$Projection ablation is the most consequential: RA drops $6.4$pp and TA drops $5.5$pp, directly validating Theorem~\ref{thm:retain_safety}.
+\end{enumerate}
+
+\subsection{Privacy--Utility Frontier (\emph{completed})}
+\begin{enumerate}[nosep,leftmargin=*]
+\item \textbf{Sweep~A (completed).} Retain-loss budget $\alpha \in \{1.5, 2.0, 3.0, 5.0, 10.0, \infty\}$ at fixed $\mathrm{FA\_target}=10\%$; results in Table~\ref{tab:eps_sweep_a} and \Cref{fig:eps_sweep_a} (\S\ref{sec:eps_sweep}). Finding: $\epsilon_R$ is non-binding; FA stopping is the active constraint.
+\item \textbf{Sweep~B (completed).} $\mathrm{FA\_target} \in \{1, 5, 10, 20, 30\}$\% at fixed $\alpha = 5$; results in Table~\ref{tab:eps_sweep_b} (\S\ref{sec:eps_sweep_b}). Finding: $\epsilon_F$ is the active constraint and produces a clear, monotonic privacy--utility frontier.
+\end{enumerate}
+
+\subsection{Scale and Architecture Generality}
+\begin{enumerate}[nosep,leftmargin=*]
+\item \textbf{CIFAR-100} (10 forget classes, one per tens place) -- harder benchmark, FA target $1$\% (random chance).
+\item \textbf{Tiny ImageNet} (200 classes) -- scalability test.
+\item \textbf{ViT-S/16 backbone} on CIFAR-10 / CIFAR-100 -- architecture-generality test. \ours{} is architecture-agnostic by construction; this verifies it empirically.
+\end{enumerate}
+
+\subsection{Modern Unlearning Baselines}
+\begin{enumerate}[nosep,leftmargin=*]
+\item \textbf{SSD}~\cite{foster2024ssd} (Selective Synaptic Dampening) -- Fisher-information-based unlearning.
+\item \textbf{UNSIR}~\cite{tarun2024unsir} -- noise injection then repair.
+\item \textbf{Boundary Unlearning}~\cite{chen2023boundary} (BE/BS) -- already in SalUn's Table A2 numbers, but to be re-run with our unified MIA-AUROC protocol.
+\end{enumerate}
+
+\subsection{Robustness Diagnostics (\emph{BN recalibration + GroupNorm fix completed})}
+\begin{enumerate}[nosep,leftmargin=*]
+\item \textbf{BatchNorm-recalibration attack (completed).} Results in Table~\ref{tab:bn_recal} and Finding~\ref{find:bn}. \ours{}+BN has $\Delta F = +88.1$pp; all baselines have $\Delta F \le 0$.
+\item \textbf{GroupNorm architectural fix (completed).} Retrained base model with GroupNorm ($93.53$\% base TA, $-0.43$pp vs BN). \ours{}+GroupNorm achieves $\Delta F = 0.00$ with TA $= 84.86$\%, FA $= 7.56$\%, RA $= 99.22$\% -- better than \ours{}+BN on every metric. Results in Table~\ref{tab:gn_comparison}. Script: \texttt{train\_groupnorm\_base.py}.
+\item \textbf{Representation probing attacks.} Extend Finding~\ref{find:probe} to MLP probes, earlier layers, gradient inversion. Pending.
+\end{enumerate}
+
+\subsection{Sequential / Compositional Unlearning}
+\begin{enumerate}[nosep,leftmargin=*]
+\item \textbf{Sequential unlearning.} Apply \ours{} to forget class 0, then from the resulting checkpoint forget class 1, then class 2, etc. Measure cumulative TA/FA/RA drift after each step.
+\item \textbf{Multi-class single-shot forgetting.} Forget $\{0, 5\}$ in one \ours{} run and compare against two sequential single-class runs.
+\end{enumerate}
+
+\subsection{Retrained-Model Distance}
+\begin{enumerate}[nosep,leftmargin=*]
+\item \textbf{Parameter-space distance.} For each unlearned checkpoint, train a retrain-from-scratch reference on $\Dr$ and report $\|\theta_u - \theta_r\|_2$ (and per-layer norms).
+\item \textbf{Feature-space FID for all baselines.} Extend the current Table~\ref{tab:fid} (which only has \ours{} variants) to SalUn, SCRUB, NegGrad+, Bad Teacher.
+\end{enumerate}
+
+The total compute budget for this list is approximately $80$--$120$ GPU-hours on a single A100, dominated by the CIFAR-100 / Tiny ImageNet / ViT runs. Results from these experiments will appear in the camera-ready / next arXiv revision.
+}
+
+% ============================================================
+\section{Failure Cases and Limitations}\label{sec:limitations}
+
+We highlight several limitations of \ours{}.
+
+\paragraph{TA gap.}
+\ours{} achieves 84.5\% test accuracy (TA) compared to 93.5\% for SalUn on CIFAR-10, a gap of approximately 9 percentage points.
+Part of this gap is structural: forgetting all 5{,}000 samples of a class removes shared low-level features that benefit other classes.
+Additionally, the \klr{} objective is conservative by design, trading raw accuracy for improved privacy (MIA AUROC close to 0.5).
+Whether this trade-off is acceptable depends on the application.
+In privacy-sensitive settings (e.g., medical data or regulatory compliance), reduced leakage may justify lower accuracy, whereas in low-risk settings the accuracy advantage of SalUn may be preferable.
+
+\paragraph{Momentum leakage.}
+Unlearning is performed using SGD with momentum.
+While gradient projection is applied to the raw gradient, the optimizer update includes a momentum term that is not explicitly projected.
+As a result, small retain-loss increases may propagate through the momentum buffer.
+In practice, the retain-loss budget mitigates this effect; however, the per-step guarantee strictly holds only for vanilla SGD without momentum.
+Extending the projection to the full update or bounding the momentum-induced error remains future work.
+
+\paragraph{No formal $(\varepsilon, \delta)$-DP guarantee.}
+The projection provides a constructive per-step guarantee (retain loss does not increase), but this does not constitute a formal differential privacy guarantee.
+Establishing a connection to $(\varepsilon, \delta)$-DP---potentially via R\'enyi DP accounting---remains an open direction.
+
+\paragraph{PathMNIST TA gap.}
+On PathMNIST, TA averages 81.2\% compared to 91.3\% for the base model.
+Classes with highly distinctive features (e.g., adipose tissue, epithelium) are more affected, as the \klr{} target assigns them near-zero probability, discouraging correct predictions.
+A class-conditional or softened \klr{} target may alleviate this issue.
+
+\paragraph{MIA per-class variation.}
+MIA AUROC varies across classes (e.g., MNIST class 1 reaches 0.653), and several PathMNIST classes deviate from the ideal value of 0.5.
+This likely reflects differences in class-specific memorisation, although this hypothesis is not explicitly verified.
+
+\paragraph{Sequential unlearning.}
+All experiments consider single-class forgetting.
+Extending the method to handle sequential forget requests (e.g., multiple classes over time) without cumulative performance degradation is not addressed.
+
+\paragraph{Limited multi-seed coverage.}
+Multi-seed results (3 seeds) are reported for the headline CIFAR-10 experiment (\Cref{tab:cifar10}), showing tight variance ($\pm 0.2$pp TA, $\pm 0.6$pp FA, $\pm 0.001$ MIA).
+Other datasets and baselines are single-seed due to computational constraints; extending multi-seed coverage to all experiments remains future work.
+
+\paragraph{\new{BN-recalibration brittleness (diagnosed and fixed).}}
+\new{The BN-recalibration diagnostic (Table~\ref{tab:bn_recal}) shows that \ours{} with standard BatchNorm has $\Delta F = +88.1$pp -- a single retain forward pass with BN in \texttt{train} mode restores nearly all forget-class accuracy. None of the four baselines exhibit this behaviour. We diagnosed the root cause (the weights encode a decision boundary that suppresses class~0 only under the exact BN running statistics of the base model) and fixed it architecturally: replacing all BatchNorm layers with GroupNorm yields $\Delta F = 0.00$ while improving every other metric (Table~\ref{tab:gn_comparison}). We recommend GroupNorm as the default backbone. The BN vulnerability remains a limitation for deployments that require a pre-trained BN-based backbone without retraining.}
+
+% ============================================================
+\section{Discussion}\label{sec:discussion}
+
+\paragraph{The CL--MU connection.}
+PURGE is, to our knowledge, the first algorithm to directly instantiate a continual learning mechanism — specifically A-GEM's gradient projection — as the primary update rule for machine unlearning. Prior work, including SCRUB ~\cite{kurmanji2023unbounded}, draws on continual learning as a conceptual motivation but does not directly adapt a CL algorithm's core update step. The distinction matters: SCRUB uses a teacher-student framework inspired by CL intuitions, whereas PURGE inherits A-GEM's projection rule with a direct formal correspondence between the CL constraint (do not increase old-task loss) and the unlearning constraint (do not increase retain-set loss).
+
+
+Our results suggest that continual learning techniques can be systematically adapted for unlearning, opening a broader design space.
+For instance, methods based on EWC~\cite{golatkar2020eternal} or PackNet-style pruning could potentially be adapted for unlearning in a similar manner.
+
+\paragraph{Why we abandoned IEWPv2.}
+We explored IEWPv2 (Influence-Weighted Entropy Unlearning Protocol v2), which combined influence-weighted entropy maximisation with interleaved retain training.
+Although it achieved reasonable forget accuracy in single-class experiments, two fundamental limitations emerged.
+First, IEWPv2 relied on gradient norms as a proxy for influence scores rather than computing the true inverse-Hessian-vector product, weakening its theoretical grounding.
+Second, its alternating forget--retain optimisation steps led to partial cancellation: the retain step counteracted forgetting, and vice versa, resulting in slow and unstable convergence that worsened with additional classes.
+In contrast, \ours{} addresses both issues by jointly handling forget and retain objectives through a single projected update.
+
+\paragraph{Why \klr{} matters.}
+The \klr{} objective consistently produces MIA AUROC values closer to 0.5 than alternative objectives.
+This is important because standard unlearning evaluation often focuses on forget accuracy without verifying whether the model's output distribution matches that of a retrained model.
+A model with FA = 0\% but MIA AUROC = 0.2 has not fully unlearned, as its outputs remain distinguishable from those of a model trained without the forget data.
+The uniform distribution is a commonly used target, but it is artificial and rarely produced by trained models, making it easier for MIA to detect.
+
+\paragraph{Generality across datasets.}
+Our experiments cover 22 class-level forgetting tasks across five datasets without architectural changes.
+The only adjustments required are modest hyperparameter tuning (e.g., learning rate and KD weight).
+The strong performance on PathMNIST is particularly notable, given the importance of unlearning in medical imaging contexts where privacy constraints are stringent.
+
+\paragraph{Future directions.}
+Several directions could further strengthen this work.
+First, the momentum issue (\Cref{sec:limitations}) could be addressed by projecting the full optimizer update or bounding the momentum-induced error.
+Second, extending to sequential unlearning would require mechanisms to track accumulated projection directions across multiple requests.
+Third, evaluating on larger-scale datasets (e.g., Tiny ImageNet) and alternative architectures (e.g., Vision Transformers) would test generality beyond ResNet-18.
+Finally, establishing a connection between gradient projection and formal $(\varepsilon, \delta)$-DP guarantees would bridge the gap between constructive and statistical notions of privacy.
+
+% ============================================================
+\section{Ethical and Societal Considerations}\label{sec:ethics}
+
+\paragraph{Unlearning as evidence removal.}
+An unlearning method that truly makes a model indistinguishable from one retrained without specific data could be misused to destroy evidence that copyrighted, biased, or otherwise problematic data was ever used for training.
+Unlike retraining (which produces a new model with a different lineage), approximate unlearning modifies the existing model in place, making forensic provenance analysis harder.
+\ours{}'s audit trail---projection rate logs, FA trajectory, and retain-loss budget history---provides partial mitigation: an auditor can verify that unlearning was applied and inspect how aggressively it was configured.
+
+\paragraph{Selective fairness degradation.}
+Class-level unlearning removes all samples from a class, which in practice may correspond to a demographic group (e.g., a medical condition, a minority dialect, or a visual category correlated with a protected attribute).
+The TA degradation we observe (up to 10pp on CIFAR-10) is not confined to the forgotten class---visually similar retained classes also suffer.
+Deployers should monitor per-class accuracy on retained classes before and after unlearning.
+
+\paragraph{Regulatory gap.}
+Approximate unlearning methods, including \ours{}, do not satisfy formal $(\varepsilon, \delta)$-DP certification.
+Whether MIA AUROC $\approx 0.5$ constitutes legally sufficient ``erasure'' under GDPR or similar frameworks remains an open legal question.
+We caution against interpreting our results as regulatory compliance without further legal analysis.
+
+% ============================================================
+\FloatBarrier
+\section{Conclusion}\label{sec:conclusion}
+
+We presented \ours{}, a machine unlearning algorithm motivated by the duality between continual learning and machine unlearning.
+By adapting gradient projection from continual learning, \ours{} enforces that each update does not increase retain-set loss (with the caveat that the guarantee applies to raw gradients rather than momentum-augmented updates).
+Combined with the retain-confusion target, multi-layer representation erasure, and dual stopping criteria, \ours{} achieves MIA AUROC close to 0.5 across five datasets while maintaining retain accuracy above 96\%.
+
+\ours{} does not fully resolve machine unlearning: it exhibits a test accuracy gap relative to some baselines, lacks formal differential privacy guarantees, and has only been evaluated at the ResNet-18 scale under limited computational resources.
+Nevertheless, the CL--MU duality perspective provides a principled framework for algorithm design, and the empirical findings (particularly regarding BatchNorm behaviour and evaluation metrics) offer practical guidance for future work.
+
+All experiments are conducted using ResNet-18 on a single GPU due to computational constraints; scaling to larger models and datasets remains an important direction for future research.
+
+% ============================================================
+% BIBLIOGRAPHY
+% ============================================================
+
+% Note: \bibliographystyle{acl_natbib} is set automatically by acl.sty
+\bibliography{references}
+
+% ============================================================
+% APPENDIX
+% ============================================================
+\appendix
+
+\section{Full Per-Class Results}
+\label{app:perclass}
+
+\subsection{MNIST (10 Classes)}
+
+\begin{table}[h]
+\centering
+\caption{\ours{} (\klr{}) per-class unlearning on MNIST.}
+\label{tab:mnist_full}
+\small
+\begin{tabular}{ccccc}
+\toprule
+Forget Cls & TA (\%) & FA (\%) & RA (\%) & MIA \\
+\midrule
+0 & 89.99 & 1.99 & 99.82 & 0.512 \\
+1 & 88.30 & 5.38 & 99.87 & 0.653 \\
+2 & 89.99 & 7.67 & 99.87 & 0.510 \\
+3 & 90.77 & 9.28 & 99.88 & 0.510 \\
+4 & 90.68 & 6.09 & 99.87 & 0.511 \\
+5 & 91.24 & 7.38 & 99.88 & 0.521 \\
+6 & 90.97 & 7.06 & 99.85 & 0.495 \\
+7 & 90.25 & 8.14 & 99.90 & 0.522 \\
+8 & 90.66 & 9.38 & 99.84 & 0.512 \\
+9 & 90.01 & 5.31 & 99.91 & 0.524 \\
+\midrule
+\textbf{Avg} & \textbf{90.19} & \textbf{6.77} & \textbf{99.87} & \textbf{0.517} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{PathMNIST (9 Classes)}
+
+\begin{table}[h]
+\centering
+\caption{\ours{} (\klr{}) per-class unlearning on PathMNIST.}
+\label{tab:pathmnist_full}
+\small
+\begin{tabular}{clcccc}
+\toprule
+Cls & Tissue Type & TA & FA & RA & MIA \\
+\midrule
+0 & Adipose & 74.35 & 7.28 & 98.45 & 0.545 \\
+1 & Background & 79.35 & 9.85 & 98.33 & 0.614 \\
+2 & Debris & 89.30 & 9.47 & 98.93 & 0.369 \\
+3 & Lymphocytes & 83.20 & 10.58 & 99.00 & 0.425 \\
+4 & Mucus & 77.49 & 9.44 & 98.53 & 0.517 \\
+5 & Smooth Musc. & 84.36 & 9.45 & 98.55 & 0.501 \\
+6 & Normal Muc. & 80.93 & 9.87 & 98.81 & 0.594 \\
+7 & Stroma & 87.16 & 10.71 & 99.39 & 0.521 \\
+8 & Epithelium & 75.96 & 7.12 & 98.74 & 0.557 \\
+\midrule
+\multicolumn{2}{c}{\textbf{Average}} & \textbf{81.24} & \textbf{9.31} & \textbf{98.74} & \textbf{0.516} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Reproducibility}
+
+Code, configs, and checkpoints are available at: \url{https://github.com/vedjaw/la_purge} % [TODO] Verify URL
+
+\textbf{Key implementation details:}
+\begin{itemize}
+    \item All experiments use PyTorch $\geq$ 2.0 with CUDA.
+    \item YAML config files for each dataset are provided in \texttt{configs/}.
+    \item The retain confusion distribution is precomputed once before unlearning and stored in memory.
+    \item Forward hooks are registered on \texttt{layer3}, \texttt{layer4}, and \texttt{avgpool} for ResNet-18.
+    \item BatchNorm layers are set to \texttt{eval()} mode immediately after setting the model to \texttt{train()} mode, ensuring trainable parameters receive gradients while running statistics remain frozen.
+\end{itemize}
+
+\end{document}

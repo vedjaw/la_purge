@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# Data & checkpoints (download / train locally)
+data/
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.bbl
+*.blg
+*.synctex.gz
+*.fdb_latexmk
+*.fls
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Legacy / local duplicates (canonical copies live in experiments/, paper/, assets/)
+/exp_*.py
+/patch_*.py
+/fix_bn_posthoc.py
+/train_groupnorm_base.py
+/purge_caisc.tex
+/purge_arxiv_final.tex
+/purge_arxiv_final.pdf
+/purge_arxiv_final.aux
+/purge_arxiv_final.log
+/purge_arxiv_final.out
+/images/
+/ablation/
+/sweep_B/
+/selective_layer/
+/acl.sty
+/acl_natbib.bst
+
+
+# Experiment run logs (CSVs in results/ are kept)
+ablation/**/log.txt
+sweep_B/**/log.txt
+images/sweep_A/**/log.txt
+images/sweep_B/**/log.txt
+selective_layer/log.txt

@@ -1,0 +1,8 @@
+label,TA,FA,RA,MIA,note
+full_purge,85.2,8.9,97.2,0.507,3-seed mean (paper headline)
+minus_kd,81.35,6.52,92.67,0.5101,seed 42
+minus_rep,85.38,9.52,97.3,0.5057,seed 42
+minus_stopping,81.03,0.0,92.26,0.5315,seed 42
+minus_gate_cap,85.38,9.52,97.3,0.5058,seed 42
+minus_proj,79.69,6.0,90.77,0.5108,seed 42
+selective_layer,85.37,8.18,97.41,0.4987,seed 42

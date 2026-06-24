@@ -1,0 +1,7 @@
+method,pre_F,post_F,delta_F,note
+PURGE_BN,10.00,98.10,88.10,BN-mediated forgetting
+SalUn,0.72,0.00,-0.72,weights
+SCRUB,88.80,88.80,0.00,weights
+Bad_Teacher,2.98,2.98,0.00,weights
+NegGrad+,84.80,84.80,0.00,weights
+PURGE_GroupNorm,7.56,7.56,0.00,GroupNorm fix
