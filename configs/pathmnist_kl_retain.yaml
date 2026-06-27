@@ -1,0 +1,16 @@
+dataset: pathmnist
+model: resnet18
+forget_type: class
+forget_class: 0
+epochs: 12
+lr: 0.0002
+rep_weight: 0.03
+kd_weight: 5.0
+max_grad_norm: 1.0
+forget_objective: kl_retain
+forget_gate: 0
+retain_budget_factor: 4.0
+fa_target: 11.1
+fa_check_freq: 50
+batch_size: 128
+seed: 42
