@@ -11,4 +11,4 @@ pdflatex purge_arxiv_final.tex
 
 Pre-built PDF: `purge_arxiv_final.pdf`
 
-Figures are referenced from `../assets/figures/` and `../images/` — copy paper figures into `assets/figures/` before compiling from this directory, or compile from the repo root with `\graphicspath{{../assets/figures/}}`.
+Figures live in `../images/`. Compile from the repo root (recommended) or set `\graphicspath{{../images/}}`.

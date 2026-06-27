@@ -32,7 +32,7 @@ checkpoints/
 .vscode/
 *.swp
 
-# Legacy / local duplicates (canonical copies live in experiments/, paper/, assets/)
+# Legacy / local duplicates (canonical copies live in experiments/, paper/)
 /exp_*.py
 /patch_*.py
 /fix_bn_posthoc.py
@@ -43,7 +43,7 @@ checkpoints/
 /purge_arxiv_final.aux
 /purge_arxiv_final.log
 /purge_arxiv_final.out
-/images/
+/assets/
 /ablation/
 /sweep_B/
 /selective_layer/

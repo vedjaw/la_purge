@@ -11,7 +11,7 @@ PURGE adapts **A-GEM gradient projection** from continual learning to machine un
 **Paper:** [`paper/purge_arxiv_final.pdf`](paper/purge_arxiv_final.pdf)
 
 <p align="center">
-  <img src="assets/figures/fig_purge_vs_salun.png" width="90%" alt="SalUn vs PURGE one-step update"/>
+  <img src="images/fig_purge_vs_salun.png" width="90%" alt="SalUn vs PURGE one-step update"/>
 </p>
 
 ---
@@ -74,7 +74,7 @@ la_purge/
 ├── experiments/            # Paper experiment scripts
 ├── scripts/                # Shell wrappers
 ├── results/                # Published CSV summaries
-├── assets/figures/         # Key figures
+├── images/                 # Paper figures
 └── paper/                  # Manuscript + references
 ```
 
@@ -121,7 +121,7 @@ bash scripts/train_groupnorm_base.sh
 ### Sweep B — privacy–utility frontier
 
 <p align="center">
-  <img src="assets/figures/sweep_B_fa_target.png" width="85%" alt="Sweep B"/>
+  <img src="images/sweep_B_fa_target.png" width="85%" alt="Sweep B"/>
 </p>
 
 | FA target | TA | FA | RA | MIA |
