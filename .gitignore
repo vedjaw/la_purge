@@ -68,6 +68,11 @@ paper/paper_from_paper_tex.pdf
 paper/purge_arxiv_final.tex
 paper/purge_arxiv_final.pdf
 
-# Per-run logs (summary CSVs in results/ are kept)
+# Per-run logs contain absolute cluster paths (author identity) — never commit.
+# Summary CSVs in results/ are kept.
 results/**/log.txt
+results/**/*_log.txt
+results/**/*.log
+results/phase_logs/
+results/cifar100/class_*/
 results_sweep/**/log.txt
