@@ -9,7 +9,12 @@ from torch.utils.data import DataLoader, Subset
 import torchvision
 import torchvision.transforms as transforms
 import torchvision.models as models
+from sklearn.metrics import roc_auc_score
+
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def get_model(num_classes=10):
     model = models.resnet18(weights=None)
     model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
@@ -17,7 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def get_cifar10(data_dir):
     mean = (0.4914, 0.4822, 0.4465)
-    std  = (0.2023, 0.1994, 0.2010)
+    std = (0.2470, 0.2435, 0.2616)
     tf = transforms.Compose([
         transforms.Resize(224),
         transforms.ToTensor(),
@@ -25,14 +30,13 @@ def get_cifar10(data_dir):
     ])
     train = torchvision.datasets.CIFAR10(root=data_dir, train=True,
                                          download=True, transform=tf)
-    test  = torchvision.datasets.CIFAR10(root=data_dir, train=False,
-                                         download=True, transform=tf)
+    test = torchvision.datasets.CIFAR10(root=data_dir, train=False,
+                                        download=True, transform=tf)
     return train, test, 10
 
 
 def compute_mia_auroc(model, member_loader, nonmember_loader, device,
                       max_n=None):
-    """AUROC-based MIA: members = forget-class train, non-members = forget-class test."""
     model.eval()
     criterion = nn.CrossEntropyLoss(reduction='none')
 
@@ -64,7 +68,7 @@ def compute_mia_auroc(model, member_loader, nonmember_loader, device,
 
     mia_loss = auroc(-m_loss[:n], -nm_loss)
     mia_conf = auroc(m_conf[:n], nm_conf)
-    mia_avg  = (mia_loss + mia_conf) / 2.0
+    mia_avg = (mia_loss + mia_conf) / 2.0
     return mia_loss, mia_conf, mia_avg
 
 
@@ -81,9 +85,8 @@ def accuracy(model, loader, device):
 
 
 def main():
-    p = argparse.ArgumentParser(description="EXP-A: Base-model MIA AUROC")
-    p.add_argument('--checkpoint', required=True,
-                   help='Path to the base (pre-unlearning) model checkpoint')
+    p = argparse.ArgumentParser(description="Base-model MIA AUROC")
+    p.add_argument('--checkpoint', required=True)
     p.add_argument('--data_dir', default=str(ROOT / 'data'))
     p.add_argument('--forget_class', type=int, default=0)
     p.add_argument('--batch_size', type=int, default=128)
@@ -98,15 +101,14 @@ def main():
     model.to(device)
 
     fc = args.forget_class
-
     forget_train_idx = [i for i, t in enumerate(train_set.targets) if t == fc]
-    forget_test_idx  = [i for i, t in enumerate(test_set.targets)  if t == fc]
+    forget_test_idx = [i for i, t in enumerate(test_set.targets) if t == fc]
     retain_train_idx = [i for i, t in enumerate(train_set.targets) if t != fc]
 
     forget_train_loader = DataLoader(Subset(train_set, forget_train_idx),
                                      batch_size=args.batch_size)
-    forget_test_loader  = DataLoader(Subset(test_set, forget_test_idx),
-                                     batch_size=args.batch_size)
+    forget_test_loader = DataLoader(Subset(test_set, forget_test_idx),
+                                    batch_size=args.batch_size)
     retain_loader = DataLoader(Subset(train_set, retain_train_idx),
                                batch_size=args.batch_size)
     full_test_loader = DataLoader(test_set, batch_size=args.batch_size)
@@ -119,28 +121,16 @@ def main():
         model, forget_train_loader, forget_test_loader, device)
 
     print("\n" + "=" * 60)
-    print("EXP-A: BASE MODEL (before any unlearning)")
+    print("BASE MODEL (before any unlearning)")
     print("=" * 60)
     print(f"  Checkpoint : {args.checkpoint}")
     print(f"  Forget class: {fc}")
     print(f"  TA  : {ta:.2f}%")
-    print(f"  FA  : {fa:.2f}%   (should be ~98% — model knows class {fc})")
+    print(f"  FA  : {fa:.2f}%")
     print(f"  RA  : {ra:.2f}%")
-    print()
     print(f"  MIA (loss AUROC) : {mia_loss:.4f}")
     print(f"  MIA (conf AUROC) : {mia_conf:.4f}")
     print(f"  MIA (average)    : {mia_avg:.4f}")
-    print()
-    if abs(mia_avg - 0.5) < 0.05:
-        print("  >> MIA ≈ 0.5 BEFORE unlearning.")
-        print("  >> This proves MIA AUROC does not measure unlearning quality")
-        print("     for class-level forgetting on well-generalizing models.")
-        print("     The model generalizes to the class concept; individual")
-        print("     train/test samples are indistinguishable by loss/confidence.")
-    else:
-        print(f"  >> MIA = {mia_avg:.4f}, which is NOT near 0.5.")
-        print("  >> The base model shows a measurable train-test gap.")
-        print("     MIA may still be informative in this setting.")
     print("=" * 60)
 
 

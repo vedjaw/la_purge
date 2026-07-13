@@ -8,7 +8,7 @@
 
 PURGE adapts **A-GEM gradient projection** from continual learning to machine unlearning. Every update is projected onto the retain-safe half-space, giving a per-step guarantee that retain loss does not increase.
 
-**Paper:** [`paper/purge_arxiv_final.pdf`](paper/purge_arxiv_final.pdf)
+**Paper:** [`paper/purge_aaai.pdf`](paper/purge_aaai.pdf) · supplementary: [`paper/purge_aaai_supplementary.pdf`](paper/purge_aaai_supplementary.pdf)
 
 <p align="center">
   <img src="images/fig_purge_vs_salun.png" width="90%" alt="SalUn vs PURGE one-step update"/>
@@ -22,15 +22,15 @@ PURGE adapts **A-GEM gradient projection** from continual learning to machine un
 |---|---|
 | **Per-step retain safety** | A-GEM projection on every forget gradient |
 | **Privacy–utility knob** | Sweep B: FA target 1% → TA 84.1%; target 30% → TA 87.6% |
-| **BN diagnostic** | PURGE+BN vulnerable (ΔF +88pp); GroupNorm fix (ΔF = 0) |
-| **5 datasets** | CIFAR-10, MNIST, SVHN, STL-10, PathMNIST · 22 forgetting tasks |
+| **BN diagnostic** | PURGE+BN vulnerable (ΔF +92pp); GroupNorm fix (ΔF = 0) |
+| **6 datasets** | CIFAR-10, CIFAR-100, MNIST, SVHN, STL-10, PathMNIST · 31 forgetting tasks |
 
 ---
 
 ## Install
 
 ```bash
-git clone https://github.com/vedjaw/la_purge.git && cd la_purge
+git clone <ANONYMIZED-REPO-URL> && cd la_purge
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -61,7 +61,7 @@ python run.py --config configs/cifar10_kl_retain.yaml \
 
 | TA | FA ↓ | RA | MIA |
 |----|------|-----|-----|
-| 85.2 ± 0.2 | 8.9 ± 0.6 | 97.2 ± 0.1 | 0.507 ± 0.001 |
+| 86.0 ± 0.04 | 2.1 ± 0.2 | 100.0 ± 0.0 | 0.530 ± 0.002 |
 
 ---
 
@@ -134,8 +134,8 @@ bash scripts/train_groupnorm_base.sh
 
 | Method | Pre-F | Post-F | ΔF |
 |--------|-------|--------|-----|
-| PURGE (BN) | 10.0% | 98.1% | **+88.1pp** |
-| PURGE (GroupNorm) | 7.6% | 7.6% | **0.0pp** |
+| PURGE (BN) | 1.3% | 93.5% | **+92.2pp** |
+| PURGE (GroupNorm) | 3.1% | 3.1% | **0.0pp** |
 | SalUn / SCRUB / others | — | — | ≤ 0 |
 
 ---
@@ -160,10 +160,9 @@ bash scripts/train_groupnorm_base.sh
 ```bibtex
 @misc{purge2026,
   title  = {PURGE: Projected Unlearning via Retain-Guided Erasure},
-  author = {Jawandhia, Vedant and Ahuja, Daksh and Siddiqui, Ghufran Alam and
-            Trivedi, Prashant and Sinha, Yash and Narang, Pratik},
+  author = {Anonymous Author(s)},
   year   = {2026},
-  url    = {https://github.com/vedjaw/la_purge}
+  note   = {Under double-blind review; author and repository details omitted}
 }
 ```
 

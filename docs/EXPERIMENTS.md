@@ -24,9 +24,9 @@ bash scripts/unlearn_cifar10.sh
 | `--fa_target` | `10.0` | ε_F (%) |
 | `--fa_check_freq` | `50` | Intra-epoch FA check |
 
-**Expected (seed 42):** TA ≈ 85.4% · FA ≈ 9.5% · RA ≈ 97.3% · MIA ≈ 0.506
+**Expected (seed 42):** TA ≈ 86.1% · FA ≈ 2.3% · RA ≈ 100.0% · MIA ≈ 0.528 (the intra-epoch FA check catches the rapid FA drop within epoch 1, stopping well below the 10% target)
 
-**3-seed headline (paper):** seeds `{42, 123, 456}` → TA 85.2±0.2 · FA 8.9±0.6 · RA 97.2±0.1 · MIA 0.507±0.001
+**3-seed headline (paper):** seeds `{42, 123, 456}` → TA 86.0±0.04 · FA 2.1±0.2 · RA 100.0±0.0 · MIA 0.530±0.002
 
 ---
 
@@ -64,7 +64,7 @@ Vary `--retain_budget_factor` ∈ {1.5, 2, 3, 5, 10, 9999}. **Finding:** ε_R is
 
 Vary `--fa_target` ∈ {1, 5, 10, 20, 30}%. **Finding:** Monotonic privacy–utility frontier.
 
-Output: `results/epsilon_sweep/` · published summaries in `results/sweep_*.csv`
+Output: `results/epsilon_sweep/` · published summaries in `results_sweep/`
 
 ---
 
@@ -77,7 +77,7 @@ python experiments/bn_recalibration.py \
 
 | Method | ΔF |
 |--------|-----|
-| PURGE (BN) | +88.1pp |
+| PURGE (BN) | +92.2pp |
 | PURGE (GroupNorm) | 0.0pp |
 
 ---
@@ -91,7 +91,7 @@ python run.py --config configs/cifar10_kl_retain.yaml \
   --use_groupnorm --data_dir ./data --save_dir ./checkpoints
 ```
 
-**Paper result:** TA 84.86% · FA 7.56% · RA 99.22% · ΔF 0.00
+**Paper result:** TA 84.1% · FA 3.1% · RA 99.1% · ΔF 0.00
 
 ---
 

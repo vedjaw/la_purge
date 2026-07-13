@@ -39,7 +39,7 @@ def get_model(num_classes=10, use_groupnorm=False):
 
 def get_cifar10(data_dir):
     mean = (0.4914, 0.4822, 0.4465)
-    std = (0.2023, 0.1994, 0.2010)
+    std = (0.2470, 0.2435, 0.2616)
     tf = transforms.Compose([
         transforms.Resize(224),
         transforms.ToTensor(),

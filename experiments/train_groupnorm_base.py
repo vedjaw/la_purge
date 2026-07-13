@@ -41,7 +41,7 @@ def get_model_groupnorm(num_classes=10, num_groups=32):
 
 def get_cifar10(data_dir, batch_size):
     mean = (0.4914, 0.4822, 0.4465)
-    std = (0.2023, 0.1994, 0.2010)
+    std = (0.2470, 0.2435, 0.2616)
     train_tf = transforms.Compose([
         transforms.Resize(224),
         transforms.RandomCrop(224, padding=28),

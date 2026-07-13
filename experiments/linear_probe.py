@@ -10,7 +10,12 @@ import torchvision.transforms as transforms
 import torchvision.models as models
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import accuracy_score
+
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def get_model(num_classes=10):
     model = models.resnet18(weights=None)
     model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
@@ -18,7 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def get_cifar10(data_dir):
     mean = (0.4914, 0.4822, 0.4465)
-    std  = (0.2023, 0.1994, 0.2010)
+    std = (0.2470, 0.2435, 0.2616)
     tf = transforms.Compose([
         transforms.Resize(224),
         transforms.ToTensor(),
@@ -26,8 +31,8 @@ def get_cifar10(data_dir):
     ])
     train = torchvision.datasets.CIFAR10(root=data_dir, train=True,
                                          download=True, transform=tf)
-    test  = torchvision.datasets.CIFAR10(root=data_dir, train=False,
-                                         download=True, transform=tf)
+    test = torchvision.datasets.CIFAR10(root=data_dir, train=False,
+                                        download=True, transform=tf)
     return train, test, 10
 
 
@@ -57,7 +62,7 @@ def extract_features(model, loader, device):
 
 
 def run_probe(features, binary_labels, method_name):
-    """5-fold CV logistic regression probe. Reports mean ± std accuracy."""
+    """5-fold CV logistic regression probe. Reports mean +/- std accuracy."""
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     accs = []
 
@@ -71,12 +76,12 @@ def run_probe(features, binary_labels, method_name):
         accs.append(accuracy_score(y_te, preds) * 100.0)
 
     mean_acc = np.mean(accs)
-    std_acc  = np.std(accs, ddof=1)
+    std_acc = np.std(accs, ddof=1)
     return mean_acc, std_acc
 
 
 def main():
-    p = argparse.ArgumentParser(description="EXP-B: Linear probe for class recovery")
+    p = argparse.ArgumentParser(description="Linear probe for class recovery")
     p.add_argument('--data_dir', default=str(ROOT / 'data'))
     p.add_argument('--forget_class', type=int, default=0)
     p.add_argument('--batch_size', type=int, default=128)
@@ -91,13 +96,13 @@ def main():
 
     fc = args.forget_class
     forget_test_idx = [i for i, t in enumerate(test_set.targets) if t == fc]
-    other_test_idx  = [i for i, t in enumerate(test_set.targets) if t != fc]
+    other_test_idx = [i for i, t in enumerate(test_set.targets) if t != fc]
 
     np.random.seed(42)
     n_pos = len(forget_test_idx)
     sampled_neg = np.random.choice(other_test_idx, size=n_pos, replace=False)
     probe_indices = np.array(forget_test_idx + list(sampled_neg))
-    probe_labels  = np.array([1] * n_pos + [0] * n_pos)
+    probe_labels = np.array([1] * n_pos + [0] * n_pos)
 
     probe_loader = DataLoader(Subset(test_set, probe_indices),
                               batch_size=args.batch_size, shuffle=False)
@@ -112,7 +117,7 @@ def main():
         ckpt_pairs.append((name, path))
 
     print("\n" + "=" * 70)
-    print(f"EXP-B: LINEAR PROBE — can class {fc} be recovered from features?")
+    print(f"LINEAR PROBE — can class {fc} be recovered from features?")
     print("=" * 70)
     print(f"  Positive samples (class {fc} test): {n_pos}")
     print(f"  Negative samples (other test):      {n_pos}")
@@ -148,15 +153,9 @@ def main():
         else:
             interp = "NOT ERASED (class info intact)"
 
-        print(f"  {name:<20} {mean_acc:.1f} ± {std_acc:.1f}%    {interp}")
+        print(f"  {name:<20} {mean_acc:.1f} +/- {std_acc:.1f}%    {interp}")
 
     print("=" * 70)
-    print()
-    print("Interpretation guide:")
-    print("  ~50%  = representations contain NO class-0 info (ideal)")
-    print("  ~100% = representations fully encode class-0 (no erasure)")
-    print("  A method with FA = 0% but probe >> 50% achieves output-level")
-    print("  forgetting only; class info is still recoverable from features.")
 
 
 if __name__ == '__main__':

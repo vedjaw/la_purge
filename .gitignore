@@ -57,3 +57,17 @@ sweep_B/**/log.txt
 images/sweep_A/**/log.txt
 images/sweep_B/**/log.txt
 selective_layer/log.txt
+
+# --- Do NOT commit (AAAI double-blind + local-only artifacts) ---
+cursor-chat-export.cursor-chat.json
+PURGE Review.pdf
+Submission_Template_For_CAISc_2026/
+purge_aaai_submission/
+paper/purge_caisc.tex
+paper/paper_from_paper_tex.pdf
+paper/purge_arxiv_final.tex
+paper/purge_arxiv_final.pdf
+
+# Per-run logs (summary CSVs in results/ are kept)
+results/**/log.txt
+results_sweep/**/log.txt

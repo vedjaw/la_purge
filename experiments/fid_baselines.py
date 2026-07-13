@@ -8,7 +8,12 @@ from torch.utils.data import DataLoader, Subset
 import torchvision
 import torchvision.transforms as transforms
 import torchvision.models as models
+from scipy.linalg import sqrtm
+
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def get_model(num_classes=10):
     model = models.resnet18(weights=None)
     model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
@@ -16,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def get_cifar10(data_dir):
     mean = (0.4914, 0.4822, 0.4465)
-    std  = (0.2023, 0.1994, 0.2010)
+    std = (0.2470, 0.2435, 0.2616)
     tf = transforms.Compose([
         transforms.Resize(224),
         transforms.ToTensor(),
@@ -24,8 +29,8 @@ def get_cifar10(data_dir):
     ])
     train = torchvision.datasets.CIFAR10(root=data_dir, train=True,
                                          download=True, transform=tf)
-    test  = torchvision.datasets.CIFAR10(root=data_dir, train=False,
-                                         download=True, transform=tf)
+    test = torchvision.datasets.CIFAR10(root=data_dir, train=False,
+                                        download=True, transform=tf)
     return train, test, 10
 
 
@@ -52,7 +57,7 @@ def extract_features(model, loader, device):
 
 
 def compute_fid(feats_a, feats_b):
-    """Fréchet distance between two sets of features."""
+    """Frechet distance between two sets of features."""
     mu_a, mu_b = feats_a.mean(axis=0), feats_b.mean(axis=0)
     sigma_a = np.cov(feats_a, rowvar=False)
     sigma_b = np.cov(feats_b, rowvar=False)
@@ -67,7 +72,6 @@ def compute_fid(feats_a, feats_b):
 
 
 def cosine_sim(feats_a, feats_b):
-    """Mean cosine similarity between corresponding feature vectors."""
     n = min(len(feats_a), len(feats_b))
     a = feats_a[:n]
     b = feats_b[:n]
@@ -77,13 +81,12 @@ def cosine_sim(feats_a, feats_b):
 
 
 def l2_dist(feats_a, feats_b):
-    """Mean L2 distance between corresponding feature vectors."""
     n = min(len(feats_a), len(feats_b))
     return float(np.mean(np.linalg.norm(feats_a[:n] - feats_b[:n], axis=1)))
 
 
 def main():
-    p = argparse.ArgumentParser(description="EXP-C: FID_feat for all methods")
+    p = argparse.ArgumentParser(description="FID_feat for all methods")
     p.add_argument('--reference', required=True,
                    help='Path to reference checkpoint (retrain or base model)')
     p.add_argument('--data_dir', default=str(ROOT / 'data'))
@@ -108,7 +111,8 @@ def main():
     ref_model.to(device)
     ref_feats = extract_features(ref_model, forget_loader, device)
     del ref_model
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     ckpt_pairs = []
     for item in args.checkpoints:
@@ -120,12 +124,12 @@ def main():
         ckpt_pairs.append((name, path))
 
     print("\n" + "=" * 75)
-    print(f"EXP-C: FID_feat — representation distance from reference model")
+    print(f"FID_feat — representation distance from reference model")
     print(f"  Reference: {args.reference}")
     print(f"  Forget class: {fc}")
     print(f"  Samples: {len(forget_test_idx)} (class-{fc} test images)")
     print("=" * 75)
-    print(f"  {'Method':<20} {'FID_feat':>10} {'Cos↓':>8} {'L2↑':>8}")
+    print(f"  {'Method':<20} {'FID_feat':>10} {'Cos':>8} {'L2':>8}")
     print("-" * 75)
 
     for name, path in ckpt_pairs:
@@ -142,22 +146,17 @@ def main():
         model.to(device)
 
         feats = extract_features(model, forget_loader, device)
-        fid  = compute_fid(feats, ref_feats)
-        cos  = cosine_sim(feats, ref_feats)
-        l2   = l2_dist(feats, ref_feats)
+        fid = compute_fid(feats, ref_feats)
+        cos = cosine_sim(feats, ref_feats)
+        l2 = l2_dist(feats, ref_feats)
 
         print(f"  {name:<20} {fid:>10.1f} {cos:>8.3f} {l2:>8.3f}")
 
         del model
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     print("=" * 75)
-    print()
-    print("Interpretation:")
-    print("  If --reference is retrain: lower FID = closer to gold-standard erasure")
-    print("  If --reference is base:    higher FID = more representational change")
-    print("  Cos: cosine similarity (lower = more change)")
-    print("  L2:  mean L2 distance (higher = more change)")
 
 
 if __name__ == '__main__':
