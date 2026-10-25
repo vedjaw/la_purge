@@ -93,8 +93,27 @@ def get_model(model_name, num_classes=10, pretrained=True, use_groupnorm=False):
     elif model_name == 'vgg16':
         model = models.vgg16(weights='DEFAULT' if pretrained else None)
         model.classifier[-1] = nn.Linear(4096, num_classes)
+    elif model_name == 'vit_b_16':
+        # A transformer backbone matters here for two independent reasons: it
+        # tests whether the projection result is convolution-specific, and it
+        # normalises with LayerNorm, which keeps no running statistics -- so it
+        # is structurally outside the reach of the BN-recalibration attack, in
+        # the same way the GroupNorm backbone is.
+        model = models.vit_b_16(weights='DEFAULT' if pretrained else None)
+        # Replace the whole `heads` Sequential, not its inner `.head`: the
+        # existing ViT checkpoints store this as `heads.weight`/`heads.bias`,
+        # and assigning to `.head` instead produces `heads.head.*`, which fails
+        # to load against them.
+        model.heads = nn.Linear(model.hidden_dim, num_classes)
+        print(f"  [ViT-B/16] hidden_dim={model.hidden_dim}, "
+              f"num_encoder_layers={len(model.encoder.layers)}, "
+              f"head -> {num_classes} classes")
     else:
         raise ValueError(f"Unsupported model: {model_name}")
+    if use_groupnorm and model_name == 'vit_b_16':
+        print("  [GroupNorm] ignored: ViT normalises with LayerNorm and has no "
+              "BatchNorm to replace")
+        use_groupnorm = False
     if use_groupnorm:
         model = _replace_bn_with_gn(model)
         bn_count = sum(1 for m in model.modules()
@@ -315,9 +334,113 @@ class ActivationExtractor:
         self._hooks.clear()
 
 
+class _CyclingBatches:
+    """An endless stream of batches over one DataLoader, created once.
+
+    BN-robust PURGE recalibrates at every optimiser step. Starting a fresh pass
+    over a DataLoader each time re-spawns its worker processes, and measured on
+    CIFAR-10 that costs ~0.67 s per call regardless of how many images are read
+    -- 72% of the recalibration overhead at 512 images. Holding one iterator
+    open removes that: each call draws the next few batches, the iterator is
+    renewed only when the loader is exhausted, and persistent_workers keeps the
+    workers alive across that renewal as well.
+
+    Abandoning the generator mid-stream (as recalibrate_bn does on reaching its
+    cap) is safe: the position lives on self.it, not in the generator.
+
+    reserve() keeps each call inside one pass. Without it, a call straddling a
+    pass boundary could draw an image twice (the next pass is a fresh shuffle).
+    With it, every call takes consecutive batches of a single shuffle -- the
+    same draw as a fresh pass's first batches, which is what this replaces.
+    """
+
+    def __init__(self, loader):
+        self.loader = loader
+        self.per_pass = len(loader)
+        self.it = iter(loader)
+        self.pos = 0
+
+    def _renew(self):
+        self.it = iter(self.loader)
+        self.pos = 0
+
+    def reserve(self, n_samples):
+        need = -(-n_samples // self.loader.batch_size)       # ceil
+        if self.per_pass - self.pos < need:
+            for _ in self.it:          # finish this pass (discard its tail) so the
+                pass                   # renewal is the ordinary end-of-pass one
+            self._renew()
+
+    def __iter__(self):
+        while True:
+            try:
+                batch = next(self.it)
+            except StopIteration:
+                self._renew()
+                continue
+            self.pos += 1
+            yield batch
+
+
+@torch.no_grad()
+def recalibrate_bn(model, retain_loader, device, cap=None):
+    """phi <- R(theta, D_r): reset BN buffers and recompute them from retain data.
+
+    This is the operator the recalibration attack applies, implemented exactly as
+    torch.optim.swa_utils.update_bn does it: reset running_mean to 0, running_var
+    to 1, num_batches_tracked to 0, then set momentum=None so PyTorch accumulates
+    a CUMULATIVE average rather than an EMA. The result depends only on the data,
+    not on the prior buffer values, which is what makes R idempotent.
+
+    `cap` bounds the number of retain samples used. R over the full retain set
+    costs one pass per call, which is unaffordable inside the training loop; a
+    few thousand samples estimate the first two moments closely enough, and the
+    final call before returning uses the full set.
+
+    `retain_loader` may be a DataLoader or any iterable of (x, y) batches, such
+    as a _CyclingBatches stream for the cheap in-loop calls.
+    """
+    bns = [m for m in model.modules()
+           if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d))]
+    if not bns:
+        return 0                      # GroupNorm / LayerNorm: nothing to do
+    saved_momentum = []
+    for m in bns:
+        m.reset_running_stats()
+        saved_momentum.append(m.momentum)
+        m.momentum = None             # cumulative moving average
+    was_training = model.training
+    model.train()                     # BN must be in train mode to accumulate
+    if cap is not None and hasattr(retain_loader, "reserve"):
+        retain_loader.reserve(cap)    # keep this draw inside one shuffle
+    seen = 0
+    for xb, _ in retain_loader:
+        model(xb.to(device, non_blocking=True))
+        seen += xb.size(0)
+        if cap is not None and seen >= cap:
+            break
+    for m, mom in zip(bns, saved_momentum):
+        m.momentum = mom
+    model.train(was_training)
+    return seen
+
+
 def select_monitor_layers(model):
-    """Pick intermediate layers for representation monitoring (ResNet-aware)."""
+    """Pick intermediate layers for representation monitoring.
+
+    ResNet/VGG: the last two stages plus the pooling output. ViT has no such
+    stages, so we take the final two encoder blocks and the terminal LayerNorm,
+    which are the closest analogue -- late-depth representations just before the
+    classification head.
+    """
     candidates = []
+    enc = getattr(model, 'encoder', None)
+    if enc is not None and hasattr(enc, 'layers'):
+        k = len(enc.layers)
+        candidates = [f'encoder.layers.encoder_layer_{k-2}',
+                      f'encoder.layers.encoder_layer_{k-1}', 'encoder.ln']
+        present = {nm for nm, _ in model.named_modules()}
+        return [c for c in candidates if c in present]
     for name, module in model.named_modules():
         if name in ('layer3', 'layer4'):
             candidates.append(name)
@@ -333,9 +456,20 @@ def select_monitor_layers(model):
 
 # =================== GRADIENT PROJECTION ===================
 
-def project_gradient(g_forget, g_retain):
+def project_gradient(g_forget, g_retain, strength=1.0):
     """
     A-GEM–style gradient projection onto the retain-safe half-space.
+
+    `strength` interpolates between no correction and the full hard constraint,
+    which is what separates a HARD constraint from a SOFT penalty:
+
+        strength = 0    no correction              <u, g_r> = <v, g_r> < 0
+        0 < s < 1       partial correction         <u, g_r> = (1-s)<v, g_r> < 0
+        strength = 1    full projection (default)  <u, g_r> = 0
+
+    Any strength below 1 therefore still admits retain-harming steps, which is
+    the empirical counterpart of Theorem 2(iv): penalising conflict biases the
+    update but does not exclude it. Only s = 1 makes such steps unreachable.
 
     Given the forget-direction gradient g_f and the retain-reference gradient
     g_r (descent direction for retain loss), project g_f so that:
@@ -358,7 +492,7 @@ def project_gradient(g_forget, g_retain):
     if sq_norm < 1e-12:
         return g_forget, False  # degenerate retain gradient
 
-    coeff = dot / sq_norm
+    coeff = strength * dot / sq_norm
     projected = [gf - coeff * gr for gf, gr in zip(g_forget, g_retain)]
     return projected, True
 
@@ -403,10 +537,12 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
     1. Forward retain batch  → out_r, retain activations (detached targets)
     2. Forward retain batch through frozen original → KD target (no grad)
     3. Forward forget batch  → out_f, forget activations (live, gradient-connected)
-    4. Forget gradient:  −CE(out_f, y_f) + λ · RepErasureLoss
+    4. Forget gradient:  −CE(out_f, y_f)  (or KL-retain / KL-uniform variant)
     5. Retain gradient:  CE(out_r, y_r) + β · KD(out_r ∥ orig_out_r)
-    6. Project forget gradient onto retain-safe half-space
-    7. Clip projected gradient and apply SGD step
+    6. Momentum-accumulate the forget gradient into the velocity v_t
+    7. Project the POST-momentum update u_t onto the retain-safe half-space
+       {u : ⟨u, g_r⟩ ≥ 0}, clip, and apply θ ← θ − η·u_t — so the per-step
+       guarantee holds for the update actually applied, even with momentum.
     """
     print(f"\n{'=' * 60}")
     print(" PURGE: Projected Unlearning via Retain-Guided Erasure")
@@ -451,8 +587,12 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
 
     extractor = ActivationExtractor(model, layer_names)
     params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = optim.SGD(params, lr=args.lr, momentum=args.momentum,
-                          weight_decay=args.weight_decay)
+    # Option 1 (project the post-momentum update): momentum and weight decay are
+    # applied MANUALLY (see apply_projected_update below) so the A-GEM projection
+    # acts on the ACTUAL update u_t = mu*v_{t-1} + g_t, not the raw gradient. The
+    # torch optimiser is thus a plain step: theta <- theta - lr * p.grad.
+    optimizer = optim.SGD(params, lr=args.lr, momentum=0.0, weight_decay=0.0)
+    velocity = [torch.zeros_like(p) for p in params]
     criterion = nn.CrossEntropyLoss()
 
     # Measure initial retain loss for budget-based early stopping
@@ -491,11 +631,227 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
                 param.requires_grad = False
                 frozen_names.append(name)
         params = [p for p in model.parameters() if p.requires_grad]
-        optimizer = optim.SGD(params, lr=args.lr, momentum=args.momentum,
-                              weight_decay=args.weight_decay)
+        optimizer = optim.SGD(params, lr=args.lr, momentum=0.0, weight_decay=0.0)
+        velocity = [torch.zeros_like(p) for p in params]
         print(f"  [selective-layer] Froze {len(frozen_names)} params "
               f"(conv1/bn1/layer1/layer2)")
         print(f"  [selective-layer] Trainable: layer3, layer4, fc only")
+
+    mu = args.momentum
+    wd = args.weight_decay
+    _last_intra_fa = None      # most recent intra-epoch FA, for adaptive checking
+    bn_robust = getattr(args, 'bn_robust', 'off')
+    if bn_robust != 'off':
+        _nbn = sum(1 for m in model.modules()
+                   if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)))
+        print(f"  [BN-robust] mode={bn_robust}"
+              + (f", recalibrate every {args.bn_recal_every} step(s) on "
+                 f"<={args.bn_recal_samples} retain samples" if bn_robust == 'exact' else "")
+              + f" | {_nbn} BN layers"
+              + ("  (no BN layers -- mode has no effect)" if _nbn == 0 else ""))
+    recal_stream = None
+    if bn_robust == 'exact' and getattr(args, 'bn_recal_persistent', False):
+        # drop_last: the stream runs across pass boundaries, so without it a
+        # call that lands on the loader's final partial batch overshoots the
+        # cap (e.g. 592 images instead of 512). Full batches keep every call at
+        # exactly the cap, matching the fresh-pass behaviour it replaces.
+        recal_stream = _CyclingBatches(DataLoader(
+            retain_loader.dataset, batch_size=retain_loader.batch_size,
+            shuffle=True, drop_last=True, num_workers=retain_loader.num_workers,
+            persistent_workers=retain_loader.num_workers > 0))
+        print("  [BN-robust] in-loop recalibration draws from one persistent "
+              "loader (no per-call worker re-spawn)")
+
+    # The forget accuracy that decides stopping is otherwise measured under the
+    # last in-loop phi (a few hundred augmented retain images, one step stale)
+    # on augmented forget images, while the model ships with phi <- R(theta_T,
+    # D_r) on deterministic transforms. On CIFAR-10 that gap is +1.6 to +3.6pp,
+    # so runs stopped at "FA <= 10%" ship at 9-12.6%. --bn_calibrated_stop
+    # measures FA the way the shipped model is scored; phi is restored after,
+    # so only the stopping decision changes.
+    calibrated_stop = (bn_robust == 'exact'
+                       and getattr(args, 'bn_calibrated_stop', False))
+    if calibrated_stop:
+        print("  [BN-robust] stopping FA measured under the shipped phi "
+              "(full deterministic recalibration, deterministic forget images)")
+
+    def _shipped_forget_acc(cap=None):
+        bns = [m for m in model.modules()
+               if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d))]
+        saved = [(m.running_mean.clone(), m.running_var.clone(),
+                  m.num_batches_tracked.clone()) for m in bns]
+        bases = {id(b): b for b in (getattr(l.dataset, 'dataset', l.dataset)
+                                    for l in (retain_loader, forget_loader))}
+        swapped = {}
+        if getattr(args, '_eval_transform', None) is not None:
+            for k, b in bases.items():
+                if getattr(b, 'transform', None) is not None:
+                    swapped[k] = b.transform
+                    b.transform = args._eval_transform
+        try:
+            recalibrate_bn(model, retain_loader, device,
+                           cap=getattr(args, 'bn_stop_recal_samples', None))
+            model.eval()
+            c = t_ = 0
+            with torch.no_grad():
+                for _x, _y in forget_loader:
+                    _x, _y = _x.to(device), _y.view(-1).to(device)
+                    c += model(_x).argmax(1).eq(_y).sum().item()
+                    t_ += len(_y)
+                    if cap is not None and t_ >= cap:
+                        break
+        finally:
+            for k, tf in swapped.items():
+                bases[k].transform = tf
+            for m, (rm, rv, nb) in zip(bns, saved):
+                m.running_mean.copy_(rm)
+                m.running_var.copy_(rv)
+                m.num_batches_tracked.copy_(nb)
+        model.train()
+        for m in bns:
+            m.eval()
+        return c / max(t_, 1) * 100
+
+    # Trajectory checkpointing (off unless --checkpoint_every > 0). step_000000
+    # is the pre-unlearning model, so the trajectory includes its own t=0 anchor.
+    global_step = 0
+    traj_dir = None
+    if getattr(args, 'checkpoint_every', 0) > 0:
+        traj_dir = os.path.join(args.save_dir, 'traj')
+        os.makedirs(traj_dir, exist_ok=True)
+        torch.save(model.state_dict(),
+                   os.path.join(traj_dir, "step_000000.pth"))
+        print(f"  Trajectory checkpoints every {args.checkpoint_every} steps "
+              f"-> {traj_dir}")
+
+    def forget_kl_to_pr():
+        """Mean KL(p_theta(x_f) || p_r) over the forget set.
+
+        This is the forget-side constraint of the constrained formulation
+        (KL to the retain-confusion distribution), as opposed to forget
+        ACCURACY, which is only a 0/1 proxy for it. FA cannot distinguish
+        "matched p_r" from "overshot p_r": both give FA ~ 0. This quantity
+        can, because it is minimised at p_theta = p_r and rises again on
+        either side. Returns None when p_r is unavailable.
+        """
+        if retain_confusion is None:
+            return None
+        model.eval()
+        tot, n = 0.0, 0
+        with torch.no_grad():
+            for _x, _ in forget_loader:
+                _x = _x.to(device)
+                logp = F.log_softmax(model(_x), dim=1)
+                tgt = retain_confusion.expand(logp.size(0), -1)
+                tot += F.kl_div(logp, tgt, reduction='sum').item()
+                n += _x.size(0)
+        model.train()
+        for m in model.modules():
+            if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
+                m.eval()
+        return tot / max(n, 1)
+
+    kl_stop_enabled = (getattr(args, 'kl_stop_tol', None) is not None
+                       or getattr(args, 'kl_stop_patience', 0) > 0)
+    kl_reached = False
+    kl_best = float('inf')
+    kl_stale = 0
+    history['forget_kl'] = []
+
+    def kl_stop_check(where):
+        """Evaluate the KL stopping criteria. Returns True to stop."""
+        nonlocal kl_reached, kl_best, kl_stale
+        kl = forget_kl_to_pr()
+        if kl is None:
+            return False
+        history['forget_kl'].append(kl)
+        # Log every check, not only the triggering one: the trajectory of this
+        # quantity is the evidence for the mechanism (it descends toward p_r,
+        # then rises again once the optimiser overshoots).
+        print(f"  [{where}] forget KL(p_theta||p_r) = {kl:.4f} "
+              f"(best {min(kl, kl_best):.4f})")
+        tol = getattr(args, 'kl_stop_tol', None)
+        if tol is not None and kl <= tol:
+            print(f"\n  [{where}] forget KL {kl:.4f} <= tol {tol:.4f} "
+                  f"— distribution matched, stopping.")
+            kl_reached = True
+            return True
+        pat = getattr(args, 'kl_stop_patience', 0)
+        if kl < kl_best - 1e-6:
+            kl_best, kl_stale = kl, 0
+        else:
+            kl_stale += 1
+            if pat > 0 and kl_stale >= pat:
+                print(f"\n  [{where}] forget KL {kl:.4f} has not improved on "
+                      f"{kl_best:.4f} for {kl_stale} checks — past the minimum "
+                      f"(over-forgetting), stopping.")
+                kl_reached = True
+                return True
+        return False
+
+    def apply_projected_update(direction, g_retain_ref):
+        """Option 1 — project the POST-momentum update.
+
+        Order matters: CLIP the ingredient step (gradient + weight decay) to
+        max_grad_norm BEFORE momentum accumulation — the same clip->momentum
+        order as torch SGD in the original implementation, which is what gives
+        momentum its ~1/(1-mu) step-size amplification (raw forget-grad norms
+        are ~100x the clip, so clipping the FINAL update instead would cap the
+        step at the mu=0 magnitude and stall forgetting). Then project the
+        accumulated update u_t onto the retain-safe half-space
+        {u : <u, g_r> >= 0} and step theta <- theta - lr*u_t (no post-clip).
+
+        Guarantee for the update ACTUALLY applied: <u_t, g_r> >= 0, and since
+        projection is norm-non-increasing and the velocity is a geometric sum
+        of norm-<=c terms, ||u_t|| <= c/(1-mu) with c = max_grad_norm.
+        Returns whether the update was projected.
+        """
+        d_list = []
+        for i, p in enumerate(params):
+            d = direction[i]
+            if wd:
+                d = d + wd * p.data
+            d_list.append(d)
+        if args.max_grad_norm and args.max_grad_norm > 0:
+            total = torch.sqrt(sum((d * d).sum() for d in d_list))
+            if total > args.max_grad_norm:
+                scale = args.max_grad_norm / (total + 1e-12)
+                d_list = [d * scale for d in d_list]
+        for i in range(len(params)):
+            velocity[i].mul_(mu).add_(d_list[i])
+        update = [v.clone() for v in velocity]
+        was_proj = False
+        if g_retain_ref is not None and not getattr(args, 'disable_projection', False):
+            update, was_proj = project_gradient(
+                update, g_retain_ref,
+                strength=getattr(args, 'projection_strength', 1.0))
+            if was_proj:
+                # Magnitude-preserving projection: rescale the boundary update
+                # back to the pre-projection velocity norm. The guarantee is
+                # unchanged (<u, g_r> = 0 is scale-invariant, and
+                # ||u|| = ||v|| <= c/(1-mu)), but forgetting speed no longer
+                # collapses when forget/retain gradients are near-antiparallel
+                # (e.g. STL-10: proj rate 100%, applied step otherwise shrinks
+                # by sin(theta)). Mirrors the original clip-after-projection
+                # dynamics, where saturated clipping re-normalised every
+                # projected gradient to full magnitude.
+                v_norm = torch.sqrt(sum((v * v).sum() for v in velocity))
+                u_norm = torch.sqrt(sum((u * u).sum() for u in update))
+                if u_norm > 1e-8 * v_norm:
+                    update = [u * (v_norm / (u_norm + 1e-12)) for u in update]
+        for p, u in zip(params, update):
+            p.grad = u
+        optimizer.step()
+        return was_proj
+
+    # A run that ends without reaching the FA target (epoch cap or retain
+    # budget) otherwise ships its LAST epoch, which can be worse on both counts
+    # than an earlier one: on CIFAR-10 class 4 BN-robust sat at 10.2-10.9%
+    # shipped FA for six epochs, then its forced 25th ended at 11.9% with the
+    # retain loss up 70%. --restore_best_epoch ships the lowest-FA epoch within
+    # the retain budget instead (with --bn_calibrated_stop, the shipped FA).
+    restore_best = getattr(args, 'restore_best_epoch', False)
+    best_fa, best_epoch, best_state = float('inf'), None, None
 
     for epoch in range(args.epochs):
         if budget_exceeded:
@@ -503,6 +859,9 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
             break
         if fa_reached:
             print(f"  FA target reached — stopping at epoch {epoch}.")
+            break
+        if kl_reached:
+            print(f"  Forget-KL criterion met — stopping at epoch {epoch}.")
             break
 
         ep_fce, ep_rl, ep_rep = 0.0, 0.0, 0.0
@@ -521,8 +880,35 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
                 x_r, y_r = next(retain_iter)
             x_r, y_r = x_r.to(device), y_r.view(-1).to(device)
 
+            # -------- BN-robust variants ----------------------------------
+            # The recalibration attack succeeds because PURGE freezes phi at
+            # phi_0 while theta adapts against it: the final weights are valid
+            # only for statistics the attacker can replace. Both variants below
+            # keep phi tracking theta during unlearning, so that the attacker's
+            # phi <- R(theta, D_r) is the state the weights were trained under
+            # rather than a state they have never seen.
+            if bn_robust == 'exact' and n_steps % args.bn_recal_every == 0:
+                recalibrate_bn(model, recal_stream or retain_loader, device,
+                               cap=args.bn_recal_samples)
+                for _m in model.modules():   # back to eval for the forward passes
+                    if isinstance(_m, (nn.BatchNorm1d, nn.BatchNorm2d)):
+                        _m.eval()
+
             # -------- forward passes --------
+            # 'ema' variant: let the RETAIN pass update the running statistics
+            # (and only the retain pass -- forget batches are class-homogeneous
+            # and would corrupt them, which is the defect we started from). This
+            # is the cheap analogue of what a retain fine-tuning stage does
+            # implicitly, and costs nothing extra.
+            if bn_robust == 'ema':
+                for _m in model.modules():
+                    if isinstance(_m, (nn.BatchNorm1d, nn.BatchNorm2d)):
+                        _m.train()
             out_r = model(x_r)
+            if bn_robust == 'ema':
+                for _m in model.modules():
+                    if isinstance(_m, (nn.BatchNorm1d, nn.BatchNorm2d)):
+                        _m.eval()
             retain_acts = OrderedDict(
                 (k, v.detach()) for k, v in extractor.activations.items())
 
@@ -559,12 +945,7 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
 
             if gated:
                 # Batch already near random chance — retain-only step
-                optimizer.zero_grad()
-                for p, g in zip(params, g_retain):
-                    p.grad = g
-                torch.nn.utils.clip_grad_norm_(
-                    params, max_norm=args.max_grad_norm)
-                optimizer.step()
+                apply_projected_update(g_retain, g_retain)
                 n_gated += 1
                 with torch.no_grad():
                     loss_ce_f_val = criterion(out_f, y_f.view(-1)).item()
@@ -582,12 +963,7 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
 
                 if capped:
                     # CE already at/past max entropy — retain-only step
-                    optimizer.zero_grad()
-                    for p, g in zip(params, g_retain):
-                        p.grad = g
-                    torch.nn.utils.clip_grad_norm_(
-                        params, max_norm=args.max_grad_norm)
-                    optimizer.step()
+                    apply_projected_update(g_retain, g_retain)
                     n_gated += 1
                     loss_rep_val = 0.0
                 else:
@@ -614,19 +990,11 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
                     loss_forget.backward()
                     g_forget = [p.grad.clone() for p in params]
 
-                    # -------- projection --------
-                    if getattr(args, 'disable_projection', False):
-                        g_proj, was_proj = g_forget, False
-                    else:
-                        g_proj, was_proj = project_gradient(g_forget, g_retain)
-
-                    # -------- apply --------
-                    optimizer.zero_grad()
-                    for p, g in zip(params, g_proj):
-                        p.grad = g
-                    torch.nn.utils.clip_grad_norm_(
-                        params, max_norm=args.max_grad_norm)
-                    optimizer.step()
+                    # -------- momentum + projection of the APPLIED update --------
+                    # Option 1: project the post-momentum update u_t (not the raw
+                    # gradient) so the retain-safety guarantee holds for the update
+                    # actually applied, even with momentum enabled.
+                    was_proj = apply_projected_update(g_forget, g_retain)
 
                     n_proj += int(was_proj)
                     loss_ce_f_val = loss_ce_f.item()
@@ -637,6 +1005,15 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
             ep_rl += loss_retain.item()
             ep_rep += loss_rep_val
             n_steps += 1
+            global_step += 1
+
+            # Optional trajectory checkpointing: snapshot the weights every N
+            # optimiser steps so that post-hoc analysis can evaluate any point
+            # along the unlearning trajectory (e.g. locating where distance to a
+            # retrained reference is minimised). Off by default.
+            if traj_dir is not None and global_step % args.checkpoint_every == 0:
+                torch.save(model.state_dict(),
+                           os.path.join(traj_dir, f"step_{global_step:06d}.pth"))
 
             pbar.set_postfix(
                 F=f"{loss_ce_f_val:.3f}",
@@ -644,20 +1021,59 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
                 G=f"{n_gated}/{n_steps}")
 
             # -------- intra-epoch FA check --------
-            if (args.fa_check_freq > 0
-                    and n_steps % args.fa_check_freq == 0):
-                model.eval()
-                _ifc, _ift = 0, 0
-                with torch.no_grad():
-                    for _x, _y in forget_loader:
-                        _x, _y = _x.to(device), _y.view(-1).to(device)
-                        _ifc += model(_x).argmax(1).eq(_y).sum().item()
-                        _ift += len(_y)
-                intra_fa = _ifc / max(_ift, 1) * 100
-                model.train()
-                for m in model.modules():
-                    if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
-                        m.eval()
+            # Forget accuracy can fall from ~99% to below the target inside a
+            # single check interval, so a coarse fixed interval overshoots: the
+            # run halts far below epsilon_F and the tolerance stops behaving
+            # like a knob.
+            #
+            # --fa_check_adaptive therefore checks EVERY step. Tightening the
+            # interval only once FA is already near the target does not work:
+            # the first measurement lands at --fa_check_freq, by which time the
+            # collapse has happened, so the finer interval never engages. To
+            # keep a per-step check affordable the trigger is evaluated on a
+            # capped subsample of the forget set; a positive trigger is then
+            # confirmed on the full set before stopping, so the reported FA is
+            # never a subsample estimate.
+            _adaptive = getattr(args, 'fa_check_adaptive', False)
+            _freq = 1 if _adaptive else args.fa_check_freq
+            if (args.fa_check_freq > 0 and _freq > 0
+                    and n_steps % _freq == 0):
+
+                def _forget_acc(cap=None):
+                    model.eval()
+                    c = t_ = 0
+                    with torch.no_grad():
+                        for _x, _y in forget_loader:
+                            _x, _y = _x.to(device), _y.view(-1).to(device)
+                            c += model(_x).argmax(1).eq(_y).sum().item()
+                            t_ += len(_y)
+                            if cap is not None and t_ >= cap:
+                                break
+                    model.train()
+                    for _m in model.modules():
+                        if isinstance(_m, (nn.BatchNorm1d, nn.BatchNorm2d)):
+                            _m.eval()
+                    return c / max(t_, 1) * 100
+
+                _cap = getattr(args, 'fa_check_samples', 512) if _adaptive else None
+                intra_fa = _forget_acc(_cap)
+                # Per-step trace. Whether epsilon_F can be a knob at all depends
+                # on how fast FA falls: if it crosses 30->1% inside ONE step, no
+                # stopping rule can resolve the targets and the tolerance is
+                # unachievable in principle rather than merely unimplemented.
+                # Printing it makes that answerable from the log.
+                if _adaptive:
+                    print(f"  [FA-trace] step {n_steps} FA {intra_fa:.2f}%", flush=True)
+                _tgt_now = args.fa_target
+                if _tgt_now is None and random_chance is not None:
+                    _tgt_now = random_chance * 100
+                # confirm a subsample trigger against the whole forget set
+                if _adaptive and _cap and _tgt_now is not None and intra_fa <= _tgt_now:
+                    intra_fa = _forget_acc(None)
+                # ... and, with --bn_calibrated_stop, under the shipped phi
+                if calibrated_stop and _tgt_now is not None and intra_fa <= _tgt_now:
+                    intra_fa = _shipped_forget_acc(None)
+                _last_intra_fa = intra_fa
 
                 _fa_tgt = args.fa_target
                 if _fa_tgt is None and random_chance is not None:
@@ -666,6 +1082,9 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
                     print(f"\n  [batch {n_steps}] FA {intra_fa:.1f}% "
                           f"<= target {_fa_tgt:.1f}% — stopping mid-epoch.")
                     fa_reached = True
+                    break
+
+                if kl_stop_enabled and kl_stop_check(f"batch {n_steps}"):
                     break
 
         # -------- per-epoch forget accuracy --------
@@ -681,6 +1100,11 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
         for m in model.modules():
             if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
                 m.eval()
+        if calibrated_stop:
+            _fa_inloop = epoch_fa
+            epoch_fa = _shipped_forget_acc()
+            print(f"  [BN-robust] FA {_fa_inloop:.1f}% under the in-loop phi, "
+                  f"{epoch_fa:.1f}% under the shipped phi (decides stopping)")
 
         active_steps = max(n_steps - n_gated, 1)
         proj_rate = n_proj / active_steps
@@ -727,7 +1151,52 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
                   f"— forgetting complete, will stop.")
             fa_reached = True
 
+        if restore_best and epoch_retain_loss <= retain_budget and epoch_fa < best_fa:
+            best_fa, best_epoch = epoch_fa, epoch + 1
+            best_state = {k: v.detach().cpu().clone()
+                          for k, v in model.state_dict().items()}
+
+        if kl_stop_enabled and not fa_reached:
+            kl_stop_check(f"epoch {epoch + 1}")
+
     extractor.remove()
+    n_epochs_run = len(history['epoch_fa'])
+    if (restore_best and not fa_reached and not kl_reached
+            and best_state is not None and best_epoch != n_epochs_run):
+        model.load_state_dict(best_state)
+        print(f"  [best-epoch] FA target not reached in {n_epochs_run} epochs; "
+              f"restoring epoch {best_epoch} (FA {best_fa:.1f}%, the lowest "
+              f"within the retain budget)")
+    # ---- final recalibration on the FULL retain set -----------------------
+    # Without this the weights end paired with phi from the PREVIOUS step, so
+    # the attacker's R(theta_T, D_r) still differs slightly and Delta F is small
+    # but nonzero. With it, the shipped phi IS R(theta_T, D_r); because R is
+    # idempotent, re-applying the attack changes nothing by construction. That
+    # makes Delta F = 0 uninteresting on its own -- the question the experiment
+    # must answer is whether FA is still LOW once phi can no longer be stale.
+    recal_stream = None        # free the persistent workers before the final pass
+    if bn_robust != 'off':
+        _swapped = None
+        try:
+            _ds = retain_loader.dataset
+            _base = getattr(_ds, 'dataset', _ds)          # unwrap Subset
+            if getattr(args, '_eval_transform', None) is not None \
+                    and getattr(_base, 'transform', None) is not None:
+                _swapped = _base.transform
+                _base.transform = args._eval_transform
+                print("  [BN-robust] final recalibration uses deterministic "
+                      "transforms (matching the attacker's)")
+        except Exception:
+            _swapped = None
+        _n = recalibrate_bn(model, retain_loader, device, cap=None)
+        if _swapped is not None:
+            _base.transform = _swapped
+        print(f"  [BN-robust] final recalibration on {_n} retain samples "
+              f"(phi <- R(theta_T, D_r); the attack is now a no-op by construction)")
+        for _m in model.modules():
+            if isinstance(_m, (nn.BatchNorm1d, nn.BatchNorm2d)):
+                _m.eval()
+
     return model, history
 
 
@@ -892,7 +1361,7 @@ def main():
     p.add_argument('--dataset', default='cifar10',
                    choices=['cifar10', 'cifar100', 'pathmnist', 'mnist', 'svhn', 'stl10'])
     p.add_argument('--model', default='resnet18',
-                   choices=['resnet18', 'resnet50', 'vgg16'])
+                   choices=['resnet18', 'resnet50', 'vgg16', 'vit_b_16'])
     p.add_argument('--data_dir', default='./data')
 
     # forget specification
@@ -906,20 +1375,28 @@ def main():
     # PURGE hyper-parameters
     p.add_argument('--epochs', type=int, default=10)
     p.add_argument('--lr', type=float, default=5e-4)
-    p.add_argument('--momentum', type=float, default=0.9)
+    p.add_argument('--momentum', type=float, default=0.9,
+                   help='SGD momentum for the UNLEARNING optimiser. Momentum is '
+                        'applied manually and the A-GEM projection acts on the '
+                        'post-momentum update, so the per-step retain-safety '
+                        'guarantee (Theorem 1) stays exact WITH momentum enabled.')
     p.add_argument('--weight_decay', type=float, default=5e-4)
-    p.add_argument('--rep_weight', type=float, default=0.1,
+    p.add_argument('--rep_weight', type=float, default=0.0,
                    help='λ — representation erasure weight')
     p.add_argument('--kd_weight', type=float, default=1.0,
                    help='β — KD anchoring weight on retain set')
     p.add_argument('--temperature', type=float, default=4.0,
                    help='Distillation temperature')
-    p.add_argument('--max_grad_norm', type=float, default=5.0)
+    p.add_argument('--max_grad_norm', type=float, default=1.0,
+                   help='Clip threshold c on the per-step ingredient. Enters '
+                        'the guarantee directly via ||u_t|| <= c/(1-mu), so it '
+                        'should not be inherited silently; matches the value '
+                        'used in every released config.')
     p.add_argument('--forget_objective', default='ga',
                    choices=['ga', 'kl_uniform', 'kl_retain'],
                    help='ga = gradient ascent, kl_uniform = KL toward uniform, '
                         'kl_retain = KL toward retain confusion distribution')
-    p.add_argument('--forget_gate', type=float, default=0.9,
+    p.add_argument('--forget_gate', type=float, default=0.0,
                    help='Skip forget gradient when batch output entropy > '
                         'max_entropy * this factor (0 = disable)')
     p.add_argument('--retain_budget_factor', type=float, default=5.0,
@@ -931,6 +1408,81 @@ def main():
     p.add_argument('--fa_check_freq', type=int, default=10,
                    help='Check FA every N batches within each epoch '
                         '(0 = end-of-epoch only)')
+    p.add_argument('--projection_strength', type=float, default=1.0,
+                   help='Interpolates between a soft penalty and the hard '
+                        'constraint. 1.0 (default) = full A-GEM projection, so '
+                        '<u,g_r> = 0. Values below 1 only partially remove the '
+                        'conflicting component, leaving <u,g_r> < 0 -- i.e. a '
+                        'soft conflict penalty. Sweep it to test whether the '
+                        'constraint has to be hard.')
+    p.add_argument('--bn_robust', default='off',
+                   choices=['off', 'exact', 'ema'],
+                   help="Keep BN statistics tracking the weights during "
+                        "unlearning, so recalibration cannot recover the forget "
+                        "class. 'exact' recomputes phi <- R(theta, D_r) before "
+                        "each step (the attacker's own operator); 'ema' instead "
+                        "lets the retain forward pass update the running stats, "
+                        "which is free but approximate. 'off' is the deployed "
+                        "behaviour that the attack defeats.")
+    p.add_argument('--bn_recal_every', type=int, default=1,
+                   help='For --bn_robust exact: recalibrate every N steps.')
+    p.add_argument('--bn_recal_persistent', action='store_true',
+                   help='For --bn_robust exact: draw in-loop recalibration '
+                        'batches from one persistent loader instead of starting '
+                        'a fresh pass each step, which re-spawns DataLoader '
+                        'workers every call. Off by default so the Phase 19/20 '
+                        'results reproduce exactly.')
+    p.add_argument('--bn_calibrated_stop', action='store_true',
+                   help='For --bn_robust exact: measure the forget accuracy that '
+                        'decides stopping under the statistics the model ships '
+                        'with (full deterministic recalibration, deterministic '
+                        'forget images) instead of the last in-loop ones, so '
+                        'the shipped FA meets the target. Off by default so '
+                        'Phases 19-23 reproduce exactly.')
+    p.add_argument('--bn_stop_recal_samples', type=int, default=None,
+                   help='For --bn_calibrated_stop: retain samples behind the '
+                        'stopping check\'s recalibration. Default: the full '
+                        'retain set, matching the shipped statistics exactly; a '
+                        'cap makes the check cheaper at the price of sampling '
+                        'noise. The final recalibration always uses the full set.')
+    p.add_argument('--restore_best_epoch', action='store_true',
+                   help='If the run ends without reaching the FA target (epoch '
+                        'cap or retain budget), ship the epoch with the lowest '
+                        'measured FA within the retain budget instead of the '
+                        'last one; with --bn_calibrated_stop that FA is the '
+                        'shipped one. Off by default so earlier phases '
+                        'reproduce exactly.')
+    p.add_argument('--bn_recal_samples', type=int, default=2048,
+                   help='For --bn_robust exact: retain samples per in-loop '
+                        'recalibration. The final recalibration always uses the '
+                        'full retain set regardless of this cap.')
+    p.add_argument('--fa_check_adaptive', action='store_true',
+                   help='Check forget accuracy every step (on a subsample, '
+                        'confirmed on the full forget set before stopping) '
+                        'instead of every --fa_check_freq batches. Needed '
+                        'because FA can fall past epsilon_F inside one coarse '
+                        'interval. Off by default so previously reported '
+                        'results remain reproducible.')
+    p.add_argument('--fa_check_samples', type=int, default=512,
+                   help='Forget-set subsample size for the per-step adaptive '
+                        'trigger. Only a trigger; the stop is always confirmed '
+                        'on the full forget set.')
+    p.add_argument('--checkpoint_every', type=int, default=0,
+                   help='Save a weight snapshot every N optimiser steps to '
+                        '<save_dir>/traj/ (step_000000 = pre-unlearning model). '
+                        'For post-hoc trajectory analysis. 0 = off.')
+    p.add_argument('--kl_stop_tol', type=float, default=None,
+                   help='Stop when mean KL(p_theta(x_f) || p_r) on the forget '
+                        'set falls below this tolerance. Enforces the forget '
+                        'constraint DIRECTLY rather than through the forget-'
+                        'accuracy proxy, so it can detect over-forgetting '
+                        '(overshooting p_r), which FA cannot. Requires '
+                        '--forget_objective kl_retain. Default: off.')
+    p.add_argument('--kl_stop_patience', type=int, default=0,
+                   help='Stop when the forget KL has not improved for this '
+                        'many consecutive checks, i.e. the trajectory has '
+                        'passed its KL minimum (the onset of over-forgetting). '
+                        '0 = off. Requires --forget_objective kl_retain.')
 
     # infra
     p.add_argument('--batch_size', type=int, default=128)
@@ -988,6 +1540,9 @@ def main():
     # ---------- data ----------
     print(f"\nLoading {args.dataset}...")
     train_set, test_set, num_classes = get_dataset(args.dataset, args.data_dir)
+    # expose the deterministic (test) transform so the BN-robust final
+    # recalibration can match the attacker's preprocessing exactly
+    args._eval_transform = getattr(test_set, 'transform', None)
     if args.forget_type == 'class' and args.forget_class is not None:
         if not (0 <= args.forget_class < num_classes):
             raise ValueError(

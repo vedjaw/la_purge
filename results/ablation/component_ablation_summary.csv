@@ -1,0 +1,14 @@
+mode,label,TA,FA,RA,MIA,feat_cos,proj_rate,gate_rate,epochs_run,stop_reason,stopped_midepoch,stopped_epoch,seconds,returncode
+stopping,full,86.1,2.14,100.0,0.5278,0.4793,100.0,0.0,1,fa_target,0,1,99.7,0
+stopping,minus_kd,85.56,0.8,99.99,0.5162,0.3786,100.0,0.0,1,fa_target,0,1,101.3,0
+stopping,minus_proj,84.87,0.78,99.91,0.513,0.3697,0.0,0.0,1,fa_target,0,1,101.7,0
+stopping,selective_layer,86.26,3.26,100.0,0.5277,0.515,100.0,0.0,1,fa_target,0,1,96.9,0
+stopping,plus_rep,86.1,2.14,100.0,0.5279,0.4793,100.0,0.0,1,fa_target,0,1,100.7,0
+stopping,plus_gate,86.1,2.14,100.0,0.5278,0.4793,100.0,0.0,1,fa_target,0,1,101.7,0
+stopping,minus_stopping,85.71,0.0,99.98,0.4722,0.0345,100.0,0.0,15,all_epochs,0,,744.4,0
+fixed,full,85.7,0.0,99.98,0.4722,0.0345,100.0,0.0,15,all_epochs,0,,745.9,0
+fixed,minus_kd,85.66,0.0,99.94,0.4748,0.044,100.0,0.0,15,all_epochs,0,,744.9,0
+fixed,minus_proj,44.37,0.0,52.55,0.4364,0.0509,0.0,0.0,15,all_epochs,0,,737.6,0
+fixed,selective_layer,85.76,0.0,99.99,0.4694,0.0332,100.0,0.0,15,all_epochs,0,,674.2,0
+fixed,plus_rep,85.74,0.0,99.98,0.4733,0.0371,100.0,0.0,15,all_epochs,0,,740.0,0
+fixed,plus_gate,87.16,19.28,100.0,0.5387,0.6086,67.0,60.0,15,all_epochs,0,,711.7,0

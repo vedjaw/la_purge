@@ -1,0 +1,7 @@
+label,norm,operator,pre_F,post_F,delta_F,pre_TA,post_TA,delta_TA,n_bn_layers,weights_intact,mean_dmu_over_sigma,n_recal,checkpoint
+exact,batchnorm,canonical_update_bn,12.98,13.020000000000001,0.040000000000000924,84.58,84.57000000000001,-0.009999999999990905,20,True,5.3e-05,45000,./checkpoints/bnr2_exact/purge_cifar10_resnet18_class_c0_ep15_lr0.0005.pth
+exact,batchnorm,ema_forward_passes,12.98,13.3,0.3200000000000003,84.58,84.5,-0.0799999999999983,20,True,0.002378,45000,./checkpoints/bnr2_exact/purge_cifar10_resnet18_class_c0_ep15_lr0.0005.pth
+ema,batchnorm,canonical_update_bn,67.74,67.72,-0.01999999999999602,89.72,89.72,0.0,20,True,5.1e-05,45000,./checkpoints/bnr2_ema/purge_cifar10_resnet18_class_c0_ep15_lr0.0005.pth
+ema,batchnorm,ema_forward_passes,67.74,66.75999999999999,-0.980000000000004,89.72,89.45,-0.269999999999996,20,True,0.002348,45000,./checkpoints/bnr2_ema/purge_cifar10_resnet18_class_c0_ep15_lr0.0005.pth
+off_ref,batchnorm,canonical_update_bn,8.74,99.2,90.46000000000001,85.18,94.11,8.929999999999993,20,True,0.051442,45000,./checkpoints/bnrobust_off/purge_cifar10_resnet18_class_c0_ep15_lr0.0005.pth
+off_ref,batchnorm,ema_forward_passes,8.74,99.3,90.56,85.18,93.96,8.779999999999987,20,True,0.051777,45000,./checkpoints/bnrobust_off/purge_cifar10_resnet18_class_c0_ep15_lr0.0005.pth

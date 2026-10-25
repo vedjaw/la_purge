@@ -1,0 +1,5 @@
+run,TA,FA,RA,MIA,proj_rate,epochs_run,stop_reason,stopped_midepoch,seconds
+cifar100_e60,76.67,1.4,92.87,0.4998,100.0,16,fa_target,1,647.6
+stl10_e60,86.42,9.2,99.07,0.4882,99.0,30,fa_target,0,201.0
+stl10_e60_fa1,85.21,2.8,98.91,0.4913,99.0,42,fa_target,0,430.3
+stl10_e60_lr1e3,85.95,8.4,99.16,0.4981,96.0,7,fa_target,0,52.2

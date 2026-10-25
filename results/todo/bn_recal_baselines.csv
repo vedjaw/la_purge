@@ -1,0 +1,4 @@
+method,pre_F,post_F,delta_F,pre_TA,post_TA,delta_TA,n_retain_samples,checkpoint
+salun,0.0,0.0,0.0,84.65,84.21,-0.44000000000001194,45000,../01_salun/checkpoints/salun_cifar10_resnet18_class.pth
+bad_teacher,27.9,27.4,-0.5,81.46,83.99,2.530000000000001,45000,../02_bad_teacher/checkpoints/bad_teacher_cifar10_class.pth
+scrub,85.7,81.3,-4.400000000000006,93.46,93.15,-0.30999999999998806,45000,../03_scrub/checkpoints/scrub_cifar10_class.pth

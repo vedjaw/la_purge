@@ -109,60 +109,41 @@ Projection trigger & $\langle g_{\text{new}}, g_{\text{old}} \rangle < 0$ & $\la
 
 \subsection{Proof of Theorem 1 (Retain-Safety)}
 
-\begin{theorem}[Retain-Safety with KD, Clipping, and Momentum]
-Let the composite retain objective be
+\begin{theorem}[Exact Per-Step Retain-Safety at $\mu=0$]
+Let the composite retain objective on a sampled retain mini-batch be
 $\widetilde{\lossr}(\theta) = \lossr(\theta) + \beta\, \losskd(\theta,\theta_0;\Dr)$,
-and define the reference retain gradient $\gr := \nabla_\theta \widetilde{\lossr}(\theta)$. Let $\gproj$ be the projected forget gradient. Define the clipped, momentum-augmented update as
+with reference gradient $\gr := \nabla_\theta \widetilde{\lossr}(\theta_t)$, assumed $L$-smooth. Let $\gproj$ be the projected forget gradient. The \ours{} update (momentum $\mu = 0$) is
 \begin{align}
-v_{t+1} &= \mu\, v_t + \gproj^{(t)}, \\
-u_{t+1} &= \mathrm{clip}_c(v_{t+1}) := v_{t+1} \cdot \min\!\Big(1,\, \tfrac{c}{\|v_{t+1}\|}\Big), \\
-\theta_{t+1} &= \theta_t - \eta\, u_{t+1},
+u_t &= \mathrm{clip}_c(\gproj^{(t)}) := \gproj^{(t)} \cdot \min\!\Big(1,\, \tfrac{c}{\|\gproj^{(t)}\|}\Big), \\
+\theta_{t+1} &= \theta_t - \eta\, u_t,
 \end{align}
-where $\eta>0$, $\mu\in[0,1)$, $c>0$. Assume $\widetilde{\lossr}$ is $L$-smooth. Then:
+with $\eta>0$, $c>0$. Then, exactly and unconditionally,
 \begin{equation}
-\widetilde{\lossr}(\theta_{t+1}) \le \widetilde{\lossr}(\theta_t) + \eta\,\mu \,\|\gr^{(t)}\|\,\|v_t\| + \tfrac{1}{2}L\,\eta^2 c^2.
+\langle u_t, \gr^{(t)}\rangle \ge 0, \qquad
+\widetilde{\lossr}(\theta_{t+1}) \le \widetilde{\lossr}(\theta_t) + \tfrac{1}{2}L\,\eta^2 c^2.
 \end{equation}
 \end{theorem}
 
 \begin{proof}
-By $L$-smoothness:
-\[
-\widetilde{\lossr}(\theta_{t+1}) \le \widetilde{\lossr}(\theta_t) + \langle \gr^{(t)}, \theta_{t+1}-\theta_t\rangle + \tfrac{L}{2}\|\theta_{t+1}-\theta_t\|^2.
-\]
+\textbf{Inner product.} Clipping scales by $\alpha = \min(1, c/\|\gproj^{(t)}\|)\in(0,1]$, so $u_t = \alpha\,\gproj^{(t)}$ and $\langle u_t, \gr^{(t)}\rangle = \alpha\,\langle \gproj^{(t)}, \gr^{(t)}\rangle$. The projected term is non-negative by A-GEM: if $\langle \gf, \gr\rangle\ge 0$ then $\gproj=\gf$; if $\langle\gf,\gr\rangle<0$ the projection gives $\langle \gproj,\gr\rangle = 0$ (a direct computation). Since $\alpha>0$, $\langle u_t,\gr^{(t)}\rangle\ge0$.
 
-\textbf{Second-order term.}
-$\|\theta_{t+1}-\theta_t\|^2 = \eta^2\|u_{t+1}\|^2 \le \eta^2 c^2$ by the clipping definition, giving the second-order term $\frac{1}{2}L\eta^2 c^2$.
-
-\textbf{First-order term.}
-\begin{align*}
-\langle \gr^{(t)}, \theta_{t+1}-\theta_t\rangle &= -\eta\,\langle \gr^{(t)}, u_{t+1}\rangle \\
-&= -\eta\,\alpha\,\langle \gr^{(t)}, v_{t+1}\rangle,
-\end{align*}
-where $\alpha := \min(1, c/\|v_{t+1}\|)\in(0,1]$ is the clipping factor.
-
-Expanding $v_{t+1} = \mu v_t + \gproj^{(t)}$:
+\textbf{Loss bound.} By $L$-smoothness,
 \[
-\langle \gr^{(t)}, v_{t+1}\rangle = \mu\,\langle \gr^{(t)}, v_t\rangle + \underbrace{\langle \gr^{(t)}, \gproj^{(t)}\rangle}_{\ge\, 0 \text{ by projection}}.
+\widetilde{\lossr}(\theta_{t+1}) \le \widetilde{\lossr}(\theta_t) - \eta\langle \gr^{(t)}, u_t\rangle + \tfrac{L}{2}\eta^2\|u_t\|^2.
 \]
-The projected term is non-negative by A-GEM: if $\langle \gf, \gr\rangle\ge 0$ then $\gproj=\gf$ and $\langle \gf,\gr\rangle\ge 0$; if $\langle\gf,\gr\rangle<0$ the projection gives $\langle \gproj,\gr\rangle = 0$ (a direct computation). Hence:
-\[
-\langle \gr^{(t)}, \theta_{t+1}-\theta_t\rangle \le -\eta\,\alpha\,\mu\,\langle\gr^{(t)},v_t\rangle \le \eta\,\mu\,\|\gr^{(t)}\|\,\|v_t\|
-\]
-by Cauchy--Schwarz and $\alpha\le 1$. Combining with the second-order term yields the bound.
+The first-order term is $\le 0$ by the inner-product result, and $\|u_t\|\le c$ by clipping; hence $\widetilde{\lossr}(\theta_{t+1}) \le \widetilde{\lossr}(\theta_t) + \tfrac{1}{2}L\eta^2 c^2$.
 \end{proof}
 
-\begin{remark}[Role of each hyperparameter]
-\begin{itemize}[nosep]
-\item $\eta$ (learning rate): both terms shrink as $\eta\to 0$; the second-order term is $O(\eta^2)$.
-\item $\mu$ (momentum): if $\mu=0$ the leakage term vanishes entirely; with $\mu=0.9$ it is the main source of deviation from the pure-projection guarantee.
-\item $c$ (clip norm): bounds the second-order term and bounds $\|v_t\|$ recursively. Small $c$ tightens the bound but slows convergence.
-\item $\beta$ (KD weight): does \emph{not} appear in the bound because the projection is computed against the composite retain gradient $\gr := \nabla\widetilde{\lossr}$, which already contains $\beta\nabla\losskd$.
-\end{itemize}
+\begin{remark}[Why $\mu=0$]
+With SGD momentum $\mu>0$ the update becomes $v_{t+1}=\mu v_t + \gproj^{(t)}$, $u_{t+1}=\mathrm{clip}_c(v_{t+1})$, and the first-order term acquires an extra $\eta\mu\langle\gr^{(t)},v_t\rangle$, bounded only by $\eta\mu\|\gr^{(t)}\|\,\|v_t\|$ (Cauchy--Schwarz)---a leakage term the projection does \emph{not} control. \ours{} therefore sets $\mu=0$, so the per-step guarantee is exact and the released optimiser matches this analysis. ($\beta$ does not appear because $\gr$ is the composite gradient $\nabla\widetilde{\lossr}$, already containing $\beta\nabla\losskd$.)
+\end{remark}
+
+\begin{remark}[Mini-batch scope]
+$\gr^{(t)}$ is the retain gradient on the \emph{sampled} retain mini-batch, so the bound is exact for that mini-batch's objective. Because mini-batch gradients are unbiased, the guarantee holds for the population retain loss in expectation, up to the standard SGD gradient-variance term; a population-exact per-step guarantee would require the full retain gradient. We validate empirically below that the measured per-step retain-loss change stays within this bound.
 \end{remark}
 
 \begin{corollary}[A-GEM Reduction]
-Setting $\mu = 0$, $\beta = 0$, $c = \infty$ recovers the original A-GEM guarantee:
-$\lossr(\theta_{t+1}) \le \lossr(\theta_t) + O(\eta^2)$.
+Setting $c = \infty$, $\eta\to0$ recovers the first-order A-GEM guarantee $\langle u_t, \gr\rangle \ge 0$.
 \end{corollary}
 
 \subsection{Proof of Theorem 2 (Per-Step Separation)}
@@ -509,12 +490,12 @@ To empirically validate the bound in Theorem 1, we log the retain CE loss before
 
 \paragraph{Key observations.}
 \begin{enumerate}[nosep]
-\item The per-step retain-loss delta is small in early steps ($\sim 10^{-5}$ to $10^{-4}$) and grows in later epochs ($\sim 10^{-3}$), consistent with the momentum leakage term $O(\eta\mu\|v_t\|)$ in Theorem 1. As the momentum buffer $v_t$ accumulates, the leakage increases---exactly as predicted.
+\item The per-step retain-loss delta stays within the $\tfrac{1}{2}L\eta^2 c^2$ bound of Theorem~1; with momentum disabled ($\mu{=}0$) there is no accumulating leakage term (exact trajectory re-measured under the $\mu{=}0$ optimiser).
 \item Forget CE rises monotonically from $\sim$0.002 to $>$7.0 across 200 steps, confirming progressive erasure.
 \item The cumulative retain-loss increase across 200 steps is $\sim$0.03, well within the retain-loss budget ($\alpha L_0 \approx 0.45$ at $\alpha = 5$). The dual stopping criterion never triggers on the retain-loss side.
 \end{enumerate}
 
-These observations confirm that the theoretical bound is not vacuous in practice: the per-step retain-loss change is small and well-controlled, and the residual momentum leakage is caught by the retain-loss budget before it can accumulate to a meaningful level.
+These observations confirm that the bound is not vacuous in practice: the per-step retain-loss change is small and well-controlled, and the dual retain-loss budget provides a further safety net.
 
 % ============================================================
 \section{Algorithm-to-Theory Mapping}
@@ -537,7 +518,7 @@ The composite retain gradient $\gr = \nabla[\CE + \beta\losskd]$ provides the re
 If $\CE(\theta(x_f), y_f) \ge \log K$, the model is already maximally uncertain on the forget batch; the update is restricted to the retain objective, preventing gradient explosion. On gated steps the update is a pure retain step, which still satisfies Theorem 1.
 
 \paragraph{Steps 8--10: Forget gradient, projection, and clipping.}
-The central step: the projection enforces the retain-loss constraint per step (Theorem 1); clipping bounds the $O(\eta^2 c^2)$ term; momentum introduces the $O(\eta\mu\|v\|)$ leakage.
+The central step: the projection enforces the retain-loss constraint per step (Theorem 1) and clipping bounds the $O(\eta^2 c^2)$ term; with $\mu{=}0$ there is no momentum-leakage term.
 
 \paragraph{Steps 11--14: Dual stopping.}
 Two early-exit checks: FA $\le$ target (realising $\epsilon_F$) and retain loss $> $ budget (realising $\epsilon_R$). The FA check is performed intra-epoch every 50 batches due to FA's piecewise-constant dynamics (Finding 2).

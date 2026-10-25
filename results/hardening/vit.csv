@@ -1,0 +1,13 @@
+run,TA,FA,RA,MIA,proj_rate,epochs_run,stop_reason,stopped_midepoch,seconds
+vit_cifar100_c10,82.92,12.4,92.7,0.4432,98.0,20,all_epochs,0,4449.0
+vit_cifar100_c20,82.7,82.0,92.29,0.357,100.0,20,all_epochs,0,4457.2
+vit_cifar100_c30,81.66,9.8,91.81,0.5496,99.0,20,all_epochs,0,4470.8
+vit_cifar100_c40,81.26,19.6,91.2,0.4755,100.0,20,all_epochs,0,4460.3
+vit_cifar100_c50,82.17,4.0,92.39,0.4465,99.0,20,all_epochs,0,4466.2
+vit_cifar100_c60,82.1,21.4,91.65,0.2109,100.0,20,all_epochs,0,4482.7
+vit_cifar100_c70,80.82,16.2,90.32,0.4565,99.0,20,all_epochs,0,4468.1
+vit_cifar100_c80,82.2,18.2,92.3,0.4926,100.0,20,all_epochs,0,4477.4
+vit_cifar100_c90,81.9,32.4,92.06,0.4801,99.0,20,all_epochs,0,4481.1
+vit_cifar10_s123,87.15,9.88,97.59,0.4536,99.0,3,fa_target,1,1785.3
+vit_cifar10_s42,86.99,9.4,97.44,0.4519,99.0,3,fa_target,1,1787.9
+vit_cifar10_s456,87.01,9.86,97.62,0.453,100.0,3,fa_target,1,1740.6

@@ -1,0 +1,12 @@
+label,norm,operator,pre_F,post_F,delta_F,pre_TA,post_TA,delta_TA,n_bn_layers,weights_intact,mean_dmu_over_sigma,n_recal,checkpoint
+base,batchnorm,canonical_update_bn,100.0,99.76,-0.23999999999999488,95.5,92.86,-2.6400000000000006,20,True,0.032608,45000,./checkpoints/base_cifar10_resnet18.pth
+base,batchnorm,ema_forward_passes,100.0,99.72,-0.28000000000000114,95.5,92.67,-2.8299999999999983,20,True,0.033014,45000,./checkpoints/base_cifar10_resnet18.pth
+purge_bn,batchnorm,canonical_update_bn,1.3599999999999999,99.74,98.38,86.1,92.9,6.800000000000011,20,True,0.0516,45000,results/todo/purge_cifar10_bn/purge_cifar10_resnet18_class_c0_ep15_lr0.0005.pth
+purge_bn,batchnorm,ema_forward_passes,1.3599999999999999,99.76,98.4,86.1,92.61,6.510000000000005,20,True,0.052002,45000,results/todo/purge_cifar10_bn/purge_cifar10_resnet18_class_c0_ep15_lr0.0005.pth
+purge_gn,groupnorm,n/a,4.859999999999999,4.859999999999999,0.0,84.15,84.15,0.0,0,True,,45000,results/todo/purge_cifar10_gn/purge_cifar10_resnet18_class_c0_ep15_lr0.0005.pth
+salun,batchnorm,canonical_update_bn,0.0,0.0,0.0,84.65,84.39,-0.2600000000000051,20,True,0.035782,45000,../01_salun/checkpoints/salun_cifar10_resnet18_class.pth
+salun,batchnorm,ema_forward_passes,0.0,0.0,0.0,84.65,84.55,-0.10000000000000853,20,True,0.036011,45000,../01_salun/checkpoints/salun_cifar10_resnet18_class.pth
+bad_teacher,batchnorm,canonical_update_bn,28.720000000000002,28.42,-0.3000000000000007,81.46,84.03,2.5700000000000074,20,True,0.048405,45000,../02_bad_teacher/checkpoints/bad_teacher_cifar10_class.pth
+bad_teacher,batchnorm,ema_forward_passes,28.720000000000002,28.1,-0.620000000000001,81.46,83.61,2.1500000000000057,20,True,0.04881,45000,../02_bad_teacher/checkpoints/bad_teacher_cifar10_class.pth
+scrub,batchnorm,canonical_update_bn,89.25999999999999,85.66,-3.5999999999999943,93.46,93.22,-0.23999999999999488,20,True,0.033775,45000,../03_scrub/checkpoints/scrub_cifar10_class.pth
+scrub,batchnorm,ema_forward_passes,89.25999999999999,84.48,-4.779999999999987,93.46,93.01,-0.44999999999998863,20,True,0.033689,45000,../03_scrub/checkpoints/scrub_cifar10_class.pth

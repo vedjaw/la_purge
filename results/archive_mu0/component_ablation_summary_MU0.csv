@@ -1,0 +1,7 @@
+label,TA,FA,RA,MIA,returncode,note
+minus_kd,86.33,8.58,100.0,0.5021,0,
+minus_rep,86.59,9.04,100.0,0.5198,0,
+minus_stopping,85.7,0.0,100.0,0.5489,0,
+minus_gate_cap,86.59,9.04,100.0,0.5199,0,
+minus_proj,88.4,44.86,99.96,0.4995,0,
+selective_layer,86.66,8.82,100.0,0.5202,0,

@@ -1,0 +1,9 @@
+run,TA,FA,RA,MIA,proj_rate,epochs_run,stop_reason,stopped_midepoch,seconds
+mom_ga_mu00,85.84,41.08,98.77,0.5007,0.0,4,retain_budget,0,210.9
+mom_ga_mu09,86.0,20.9,99.78,0.5117,0.0,1,retain_budget,0,73.6
+mom_kluniform_mu00,86.82,11.28,100.0,0.4881,100.0,12,retain_budget,0,583.1
+mom_kluniform_mu09,86.36,3.86,100.0,0.5255,100.0,1,fa_target,0,73.8
+mom_projonly_mu00,88.77,49.66,99.9,0.4972,89.0,4,retain_budget,0,215.4
+mom_projonly_mu09,86.22,18.64,99.9,0.5114,84.0,1,retain_budget,0,73.1
+mom_purge_mu00,86.28,5.54,100.0,0.5164,100.0,8,fa_target,0,427.0
+mom_purge_mu09,86.1,2.14,100.0,0.5278,100.0,1,fa_target,0,100.7

@@ -76,3 +76,13 @@ results/**/*.log
 results/phase_logs/
 results/cifar100/class_*/
 results_sweep/**/log.txt
+
+# --- Local-only working files -------------------------------------------------
+# Archives of raw run logs (they record absolute machine paths), editor upload
+# bundles, planning notes, and the revision-marked build of the paper.
+*.tgz
+*.zip
+prism_bundle/
+REVISION_PLAN.md
+paper/purge_tmlr_revisions.pdf
+paper/*_preview.pdf

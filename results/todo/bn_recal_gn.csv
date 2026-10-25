@@ -1,0 +1,2 @@
+method,pre_F,post_F,delta_F,pre_TA,post_TA,delta_TA,n_retain_samples,checkpoint
+purge_gn,4.3,4.3,0.0,84.15,84.15,0.0,45000,results/todo/purge_cifar10_gn/purge_cifar10_resnet18_class_c0_ep15_lr0.0005.pth

@@ -1,0 +1,2 @@
+label,norm,operator,pre_F,post_F,delta_F,pre_TA,post_TA,delta_TA,n_bn_layers,weights_intact,mean_dmu_over_sigma,n_recal,checkpoint
+purge_vit,groupnorm,n/a,9.62,9.62,0.0,87.01,87.01,0.0,0,True,,45000,./checkpoints/purge_cifar10_vit_b_16_class_c0_ep15_lr0.0002.pth

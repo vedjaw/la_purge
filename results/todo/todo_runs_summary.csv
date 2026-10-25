@@ -1,0 +1,8 @@
+run,TA,FA,RA,MIA,feat_cos,proj_rate,epochs_run,stop_reason,seconds
+A1_purge_cifar10_bn,86.1,2.14,100.0,0.5278,0.4793,100.0,1,fa_target,99.3
+A2_purge_cifar10_gn,84.15,3.52,99.25,0.4812,0.5666,100.0,3,fa_target,196.6
+G_objective_ga,86.44,8.24,100.0,0.5588,0.6314,71.0,7,fa_target,333.7
+G_objective_kl_retain,86.1,2.14,100.0,0.5278,0.4793,100.0,1,fa_target,102.0
+G_objective_kl_uniform,86.36,3.86,100.0,0.5255,0.5239,100.0,1,fa_target,74.3
+H_projection_only,86.23,18.66,99.9,0.5114,0.6185,84.0,1,retain_budget,72.9
+todos,86.1,2.14,100.0,0.5278,0.4793,100.0,14,fa_target,99.3

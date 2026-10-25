@@ -6,12 +6,17 @@
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-PURGE adapts **A-GEM gradient projection** from continual learning to machine unlearning. Every update is projected onto the retain-safe half-space, giving a per-step guarantee that retain loss does not increase.
+PURGE removes a class from a trained network while protecting what the network
+should keep. It adapts A-GEM gradient projection from continual learning: before
+every step, the update the optimiser is about to apply, momentum included, is
+projected onto the half-space where it cannot increase the retain loss to first
+order. The resulting per-step retain-safety guarantee holds for the optimiser
+that actually runs, not for a momentum-free surrogate.
 
-**Paper:** [`paper/purge_aaai.pdf`](paper/purge_aaai.pdf) · supplementary: [`paper/purge_aaai_supplementary.pdf`](paper/purge_aaai_supplementary.pdf)
+**Paper:** [`paper/purge_tmlr.pdf`](paper/purge_tmlr.pdf) · source [`paper/purge_tmlr.tex`](paper/purge_tmlr.tex)
 
 <p align="center">
-  <img src="images/fig_purge_vs_salun.png" width="90%" alt="SalUn vs PURGE one-step update"/>
+  <img src="images/fig_pipeline.png" width="92%" alt="How PURGE takes a step"/>
 </p>
 
 ---
@@ -20,154 +25,159 @@ PURGE adapts **A-GEM gradient projection** from continual learning to machine un
 
 | | |
 |---|---|
-| **Per-step retain safety** | A-GEM projection on every forget gradient |
-| **Privacy–utility knob** | Sweep B: FA target 1% → TA 84.1%; target 30% → TA 87.6% |
-| **BN diagnostic** | PURGE+BN vulnerable (ΔF +92pp); GroupNorm fix (ΔF = 0) |
-| **6 datasets** | CIFAR-10, CIFAR-100, MNIST, SVHN, STL-10, PathMNIST · 31 forgetting tasks |
+| **Exact per-step retain safety** | ⟨u<sub>t</sub>, g<sub>r</sub>⟩ ≥ 0 for the post-momentum update actually applied (Theorem 1), and logged at every step of real runs |
+| **Momentum is not incidental** | removing it to simplify the analysis stops forgetting on five of six datasets (e.g. MNIST forget accuracy 95.9%) |
+| **Six datasets, 31 forgetting tasks** | CIFAR-10, CIFAR-100, MNIST, SVHN, STL-10, PathMNIST with ResNet-18; ViT-B/16 on CIFAR-10 |
+| **BatchNorm: attacked, then fixed** | recomputing BatchNorm statistics undoes forgetting learned against frozen ones (ΔF = +98.4pp); BN-robust PURGE keeps forget accuracy at or below chance under that attack on all ten CIFAR-10 classes and on MNIST |
 
 ---
 
 ## Install
 
 ```bash
-git clone <ANONYMIZED-REPO-URL> && cd la_purge
+git clone <repository-url> la_purge && cd la_purge
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-**Requirements:** CUDA GPU recommended · datasets auto-download to `./data`
+A CUDA GPU is recommended. Datasets download to `./data` on first use
+(PathMNIST through the `medmnist` package).
 
----
-
-## Quick Start
-
-```bash
-# 1. Train base model (once)
-bash scripts/train_base_cifar10.sh
-
-# 2. Run PURGE unlearning
-bash scripts/unlearn_cifar10.sh
-```
-
-Or directly:
+## Quick start
 
 ```bash
+# 1. Base model: ImageNet-pretrained ResNet-18 fine-tuned on CIFAR-10
+#    -> checkpoints/base_cifar10_resnet18.pth
+python experiments/train_base_all.py --datasets cifar10 --data_dir ./data --save_dir ./checkpoints
+
+# 2. Forget CIFAR-10 class 0 with PURGE
 python run.py --config configs/cifar10_kl_retain.yaml \
   --checkpoint ./checkpoints/base_cifar10_resnet18.pth \
   --data_dir ./data --save_dir ./checkpoints
 ```
 
-**CIFAR-10 class 0 (3 seeds, paper headline):**
+`--forget_class k` forgets another class, and `configs/` holds one configuration
+per dataset. The run prints test, forget and retain accuracy (TA / FA / RA),
+membership-inference AUROC, and saves the unlearned checkpoint.
 
-| TA | FA ↓ | RA | MIA |
-|----|------|-----|-----|
-| 86.0 ± 0.04 | 2.1 ± 0.2 | 100.0 ± 0.0 | 0.530 ± 0.002 |
+### BN-robust PURGE
+
+On a BatchNorm backbone, add these flags to keep the BatchNorm statistics
+consistent with the weights throughout unlearning (§5.6 of the paper):
+
+```bash
+python run.py --config configs/cifar10_kl_retain.yaml \
+  --checkpoint ./checkpoints/base_cifar10_resnet18.pth \
+  --data_dir ./data --save_dir ./checkpoints \
+  --bn_robust exact --bn_recal_samples 512 --bn_recal_persistent \
+  --bn_calibrated_stop --bn_stop_recal_samples 10240 --restore_best_epoch --epochs 25
+```
+
+### Attack a checkpoint with BatchNorm recalibration
+
+```bash
+python experiments/bn_illusion_attack.py --dataset cifar10 --forget_class 0 \
+  --data_dir ./data --checkpoints purge:<unlearned.pth> [--recal_on train|test]
+```
+
+The attack resets the BatchNorm statistics and recomputes them on the retain set
+(or, with `--recal_on`, on data of the attacker's choosing), checks that no
+weight changed, and reports forget accuracy before and after.
 
 ---
 
-## Repository Layout
+## Results
+
+### Cross-dataset (Table 3)
+
+Mean ± std over classes × seeds (three seeds on the 10-class datasets, one seed
+per class on CIFAR-100). Chance = 100/K% is the level a fully unlearned model
+must reach.
+
+| Dataset | tasks | chance | TA | FA ↓ | RA | MIA |
+|---------|------:|-------:|----|------|----|-----|
+| CIFAR-10  | 1 | 10.0% | 86.13 ± 0.02 | **1.87** ± 0.25 | 100.00 ± 0.00 | 0.529 ± 0.001 |
+| MNIST     | 10 | 10.0% | 90.00 ± 0.64 | **6.17** ± 2.81 | 99.49 ± 0.04 | 0.497 ± 0.009 |
+| SVHN      | 1 | 10.0% | 89.69 ± 0.02 | **5.75** ± 0.17 | 97.26 ± 0.01 | 0.525 ± 0.001 |
+| PathMNIST | 9 | 11.1% | 80.96 ± 5.39 | **5.82** ± 3.42 | 98.88 ± 0.31 | 0.483 ± 0.084 |
+| STL-10    | 1 | 10.0% | 85.15 ± 0.05 | **1.73** ± 0.77 | 98.87 ± 0.04 | 0.491 ± 0.007 |
+| CIFAR-100 | 9 | 1.0% | 75.50 ± 0.64 | **1.27** ± 0.37 | 91.32 ± 0.88 | 0.494 ± 0.038 |
+
+STL-10 and CIFAR-100 are shown at a 60-epoch budget. At their configuration's
+epoch budget they stop short (FA 75.67% and 4.07%) because they get far fewer
+optimiser steps; the paper reports both.
+
+### BatchNorm recalibration and BN-robust PURGE (Table 10)
+
+CIFAR-10 class 0, three seeds, statistics recomputed on the retain set. These
+runs use a 93.97% base model, so they are self-contained.
+
+| | FA | FA after the attack | TA | RA | min / run |
+|---|---|---|---|---|---|
+| PURGE, frozen statistics | 8.51 ± 0.30 | **99.12** ± 0.09 | 85.20 | 97.34 | 1.9 |
+| PURGE, GroupNorm backbone | 5.91 ± 0.09 | n/a (no statistics) | 83.13 | 98.92 | 2.5 |
+| BN-robust PURGE | 9.19 ± 0.08 | **9.18** ± 0.07 | 84.30 | 95.59 | 13.3 |
+
+<p align="center">
+  <img src="images/fig_bnrobust_attack.png" width="92%" alt="Forget accuracy before and after the recalibration attack"/>
+</p>
+
+---
+
+## Reproducing the paper
+
+[`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md) maps every table and figure to the
+script that produces it and the CSV it writes. All published numbers are in
+`results/` as CSVs; the figures are regenerated from those CSVs by the
+`gen_*.py` scripts at the repository root.
+
+## Repository layout
 
 ```
 la_purge/
-├── run.py                  # Main PURGE implementation
-├── configs/                # YAML configs
-├── experiments/            # Paper experiment scripts
-├── scripts/                # Shell wrappers
-├── results/                # Published CSV summaries
-├── images/                 # Paper figures
-└── paper/                  # Manuscript + references
+├── run.py                 # PURGE: projected-momentum update, objectives, stopping, BN-robust mode
+├── configs/               # one YAML configuration per dataset
+├── experiments/           # base training, attacks, ablations, diagnostics
+├── run_hardening.sh       # numbered experiment phases behind the robustness results
+├── run_*.sh, collect_*    # other experiment runners and result collectors
+├── gen_*.py               # figure scripts (read results/, write images/)
+├── scripts/               # small shell wrappers
+├── results/               # every published number, as CSV
+├── images/                # paper figures
+├── docs/EXPERIMENTS.md    # table/figure -> script -> CSV map
+└── paper/                 # manuscript sources and PDFs
 ```
 
----
+## Key flags
 
-## Experiments
+Values used for CIFAR-10. The configuration files set them, except
+`--momentum`, which keeps its command-line default; the reported runs use the
+configuration files unmodified.
 
-Full commands and expected outputs: **[docs/EXPERIMENTS.md](docs/EXPERIMENTS.md)**
-
-| Script | Paper section | What it does |
-|--------|---------------|--------------|
-| `experiments/component_ablation.py` | Table: component isolation | −KD, −Rep, −Stopping, −Projection, selective-layer |
-| `experiments/epsilon_sweep.py` | Sweep A & B | Retain-budget vs FA-target frontier |
-| `experiments/bn_recalibration.py` | Finding 3 (BN) | BN-recalibration attack diagnostic |
-| `experiments/train_groupnorm_base.py` | GroupNorm fix | Train GN backbone |
-| `experiments/base_mia.py` | Finding 1 (MIA) | MIA on pre-unlearning base model |
-| `experiments/linear_probe.py` | Finding 4 (probe) | Linear probe on penultimate features |
-| `experiments/fid_baselines.py` | FID table | Feature-space Fréchet distance |
-
-**One-liners:**
-
-```bash
-bash scripts/run_component_ablation.sh
-bash scripts/run_epsilon_sweep.sh
-bash scripts/run_epsilon_sweep.sh --only B
-python experiments/base_mia.py --checkpoint checkpoints/base_cifar10_resnet18.pth
-bash scripts/train_groupnorm_base.sh
-```
-
----
-
-## Key Results
-
-### Component ablation (CIFAR-10, seed 42)
-
-| Config | TA | FA | RA | MIA |
-|--------|-----|-----|------|------|
-| Full PURGE | 85.2 | 8.9 | 97.2 | 0.507 |
-| −Projection | 79.69 | 6.0 | 90.77 | 0.511 |
-| −KD | 81.35 | 6.52 | 92.67 | 0.510 |
-| −Stopping | 81.03 | 0.0 | 92.26 | 0.532 |
-| Selective-layer | 85.37 | 8.18 | 97.41 | 0.499 |
-
-### Sweep B — privacy–utility frontier
-
-<p align="center">
-  <img src="images/sweep_B_fa_target.png" width="85%" alt="Sweep B"/>
-</p>
-
-| FA target | TA | FA | RA | MIA |
-|-----------|-----|-----|------|------|
-| 1% | 84.13 | 0.68 | 96.54 | 0.498 |
-| 10% | 85.38 | 9.52 | 97.30 | 0.506 |
-| 30% | 87.60 | 29.92 | 97.44 | 0.499 |
-
-### BN recalibration + GroupNorm fix
-
-| Method | Pre-F | Post-F | ΔF |
-|--------|-------|--------|-----|
-| PURGE (BN) | 1.3% | 93.5% | **+92.2pp** |
-| PURGE (GroupNorm) | 3.1% | 3.1% | **0.0pp** |
-| SalUn / SCRUB / others | — | — | ≤ 0 |
-
----
-
-## Hyperparameters
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--forget_objective` | `kl_retain` | `ga` / `kl_uniform` / `kl_retain` |
-| `--retain_budget_factor` | `5.0` | Retain-loss budget ε_R |
-| `--fa_target` | `10.0` | Forget-accuracy target ε_F (%) |
-| `--kd_weight` | `2.0` | Knowledge distillation weight |
-| `--rep_weight` | `0.05` | Representation erasure weight |
-| `--disable_projection` | off | Ablation: skip A-GEM projection |
-| `--freeze_early_layers` | off | Ablation: freeze conv1–layer2 |
-| `--use_groupnorm` | off | Use GroupNorm backbone |
-
----
+| Flag | CIFAR-10 | Role |
+|------|-----------------|------|
+| `--forget_objective` | `kl_retain` | KL towards the retain-confusion distribution |
+| `--momentum` | 0.9 | momentum; the projection acts on the post-momentum update |
+| `--max_grad_norm` | 1.0 | clip applied before momentum accumulation |
+| `--kd_weight` | 2.0 | knowledge-distillation anchor on retain data |
+| `--retain_budget_factor` | 5.0 | stop if retain loss exceeds this multiple of its start |
+| `--fa_target` | 10.0 | stop once forget accuracy reaches this % (chance) |
+| `--epochs` / `--lr` | 15 / 5e-4 | epoch cap and learning rate |
+| `--bn_robust` | `off` | `exact` recomputes BatchNorm statistics before every step |
+| `--use_groupnorm` | off | GroupNorm backbone (needs a GroupNorm base model) |
+| `--disable_projection` | off | ablation: skip the projection |
 
 ## Citation
 
 ```bibtex
 @misc{purge2026,
-  title  = {PURGE: Projected Unlearning via Retain-Guided Erasure},
+  title  = {Provably Retain-Safe Machine Unlearning via Gradient Projection},
   author = {Anonymous Author(s)},
   year   = {2026},
-  note   = {Under double-blind review; author and repository details omitted}
+  note   = {Under double-blind review}
 }
 ```
 
----
-
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).

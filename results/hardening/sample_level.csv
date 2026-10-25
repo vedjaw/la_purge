@@ -1,0 +1,5 @@
+run,TA,FA,RA,MIA,proj_rate,epochs_run,stop_reason,stopped_midepoch,seconds
+sample_pct0.01,95.33,100.0,100.0,,100.0,9,retain_budget,0,361.0
+sample_pct0.01_noproj,95.17,100.0,99.99,,0.0,4,retain_budget,0,194.3
+sample_pct0.05,95.22,100.0,100.0,,100.0,2,retain_budget,0,200.1
+sample_pct0.05_noproj,94.7,99.76,99.76,,0.0,1,retain_budget,0,120.7

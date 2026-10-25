@@ -1,0 +1,3 @@
+label,norm,operator,pre_F,post_F,delta_F,pre_TA,post_TA,delta_TA,n_bn_layers,weights_intact,mean_dmu_over_sigma,n_recal,checkpoint,recal_on
+base,batchnorm,canonical_update_bn,99.8,99.1,-0.7000000000000028,93.97,94.05,0.0799999999999983,20,True,0.037812,10000,./checkpoints/base_cifar10_resnet18.pth,test
+base,batchnorm,ema_forward_passes,99.8,99.11999999999999,-0.6800000000000068,93.97,94.05,0.0799999999999983,20,True,0.037466,10000,./checkpoints/base_cifar10_resnet18.pth,test

@@ -1,0 +1,7 @@
+run,TA,FA,RA,MIA,proj_rate,epochs_run,stop_reason,stopped_midepoch,seconds
+s7_pct0.01_fixed,71.87,58.4,73.19,,100.0,60,all_epochs,0,2062.0
+s7_pct0.01_fixed_noproj,17.14,12.0,14.23,,0.0,60,all_epochs,0,2057.1
+s7_pct0.01_tgt95,93.83,99.6,99.79,,100.0,20,retain_budget,0,802.9
+s7_pct0.05_fixed,72.26,71.8,74.34,,100.0,60,all_epochs,0,2393.0
+s7_pct0.05_fixed_noproj,17.19,14.72,14.04,,0.0,60,all_epochs,0,2385.7
+s7_pct0.05_tgt95,92.88,99.48,99.6,,100.0,5,retain_budget,0,365.2

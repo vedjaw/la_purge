@@ -1,0 +1,4 @@
+label,norm,operator,pre_F,post_F,delta_F,pre_TA,post_TA,delta_TA,n_bn_layers,weights_intact,mean_dmu_over_sigma,n_recal,checkpoint,recal_on
+gn_s42,groupnorm,n/a,5.88,5.88,0.0,83.17999999999999,83.17999999999999,0.0,0,True,,45000,./checkpoints/bnr6_gn_s42/purge_cifar10_resnet18_class_c0_ep15_lr0.0005.pth,retain
+gn_s123,groupnorm,n/a,6.02,6.02,0.0,83.08,83.08,0.0,0,True,,45000,./checkpoints/bnr6_gn_s123/purge_cifar10_resnet18_class_c0_ep15_lr0.0005.pth,retain
+gn_s456,groupnorm,n/a,5.84,5.84,0.0,83.12,83.12,0.0,0,True,,45000,./checkpoints/bnr6_gn_s456/purge_cifar10_resnet18_class_c0_ep15_lr0.0005.pth,retain

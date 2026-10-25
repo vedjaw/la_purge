@@ -54,7 +54,12 @@ def run_instrumented(args):
     layer_names = select_monitor_layers(model)
     extractor = ActivationExtractor(model, layer_names)
     params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=5e-4)
+    # Option 1: momentum + weight decay handled manually so the projection acts on
+    # the POST-momentum update (mirrors run.py). torch optimiser = plain step.
+    optimizer = optim.SGD(params, lr=args.lr, momentum=0.0, weight_decay=0.0)
+    velocity = [torch.zeros_like(p) for p in params]
+    mu = 0.9
+    wd = 5e-4
     criterion = nn.CrossEntropyLoss()
 
     # Retain confusion distribution
@@ -117,7 +122,7 @@ def run_instrumented(args):
             loss_retain.backward()
             g_retain = [p.grad.clone() for p in params]
 
-            # Forget gradient
+            # Forget gradient (raw)
             optimizer.zero_grad()
             target = retain_confusion.expand_as(out_f)
             loss_dir = F.kl_div(F.log_softmax(out_f, dim=1), target,
@@ -127,22 +132,39 @@ def run_instrumented(args):
             loss_forget.backward()
             g_forget = [p.grad.clone() for p in params]
 
-            # Raw inner product BEFORE projection
-            dot_raw = sum((gf * gr).sum() for gf, gr in
-                          zip(g_forget, g_retain)).item()
-            g_f_norm = sum((gf**2).sum() for gf in g_forget).sqrt().item()
+            # Option 1: clip the ingredient step BEFORE momentum accumulation
+            # (clip -> momentum, matching run.py), then project the
+            # POST-momentum update and apply with NO post-clip.
+            d_list = [g_forget[i] + wd * p.data for i, p in enumerate(params)]
+            total = sum((d**2).sum() for d in d_list).sqrt()
+            if total > 1.0:
+                d_list = [d * (1.0 / (total + 1e-12)) for d in d_list]
+            for i in range(len(params)):
+                velocity[i].mul_(mu).add_(d_list[i])
+            update = [v.clone() for v in velocity]
+
+            g_f_norm = sum((u**2).sum() for u in update).sqrt().item()   # ||u_t||
             g_r_norm = sum((gr**2).sum() for gr in g_retain).sqrt().item()
+            # inner product of the APPLIED (post-momentum) update with g_r, pre-projection
+            dot_raw = sum((u * gr).sum() for u, gr in
+                          zip(update, g_retain)).item()
 
-            # Project
-            g_proj, was_proj = project_gradient(g_forget, g_retain)
-            dot_post = sum((gp * gr).sum() for gp, gr in
-                           zip(g_proj, g_retain)).item()
+            # Project the post-momentum update onto the retain-safe half-space,
+            # then rescale to the pre-projection norm (magnitude-preserving,
+            # matching run.py; <u,g_r>=0 is scale-invariant so the guarantee holds)
+            u_proj, was_proj = project_gradient(update, g_retain)
+            if was_proj:
+                v_norm = sum((v**2).sum() for v in velocity).sqrt()
+                u_norm = sum((u**2).sum() for u in u_proj).sqrt()
+                if u_norm > 1e-8 * v_norm:
+                    u_proj = [u * (v_norm / (u_norm + 1e-12)) for u in u_proj]
+            dot_post = sum((up * gr).sum() for up, gr in
+                           zip(u_proj, g_retain)).item()
 
-            # Apply
+            # Step: theta <- theta - lr * u_proj (norm bounded by 1/(1-mu))
             optimizer.zero_grad()
-            for p, g in zip(params, g_proj):
-                p.grad = g
-            torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
+            for p, u in zip(params, u_proj):
+                p.grad = u
             optimizer.step()
 
             # Measure retain loss AFTER step
@@ -212,7 +234,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--kd_weight", type=float, default=2.0)
-    ap.add_argument("--rep_weight", type=float, default=0.05)
+    ap.add_argument("--rep_weight", type=float, default=0.0)
     ap.add_argument("--batch_size", type=int, default=128)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--use_groupnorm", action="store_true")

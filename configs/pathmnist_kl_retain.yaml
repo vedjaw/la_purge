@@ -4,7 +4,7 @@ forget_type: class
 forget_class: 0
 epochs: 12
 lr: 0.0002
-rep_weight: 0.03
+rep_weight: 0.0
 kd_weight: 5.0
 max_grad_norm: 1.0
 forget_objective: kl_retain

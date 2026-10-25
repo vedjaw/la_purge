@@ -1,0 +1,17 @@
+run,TA,FA,RA,MIA,proj_rate,epochs_run,stop_reason,stopped_midepoch,seconds
+m14_mnist_ga_mu00,90.99,28.13,99.13,0.5206,0.0,12,all_epochs,0,694.7
+m14_mnist_ga_mu09,90.61,16.63,99.54,0.4938,0.0,12,all_epochs,0,653.7
+m14_mnist_kluniform_mu00,99.03,95.15,99.46,0.4362,100.0,12,all_epochs,0,698.7
+m14_mnist_kluniform_mu09,91.13,10.27,99.42,0.4854,100.0,12,all_epochs,0,694.2
+m14_mnist_projonly_mu00,91.62,32.94,99.23,0.5249,73.0,12,all_epochs,0,696.2
+m14_mnist_projonly_mu09,90.61,16.44,99.54,0.4937,53.0,12,all_epochs,0,661.5
+m14_mnist_purge_mu00,99.01,95.29,99.43,0.4398,99.0,12,all_epochs,0,724.8
+m14_mnist_purge_mu09,89.63,0.0,99.4,0.5821,100.0,12,all_epochs,0,737.5
+m14_svhn_ga_mu00,91.34,47.8,95.28,0.5291,0.0,15,all_epochs,0,949.8
+m14_svhn_ga_mu09,91.93,35.29,97.97,0.5262,0.0,15,all_epochs,0,921.0
+m14_svhn_kluniform_mu00,93.07,64.39,97.36,0.538,100.0,15,all_epochs,0,968.0
+m14_svhn_kluniform_mu09,89.66,8.06,96.9,0.4525,100.0,15,all_epochs,0,966.8
+m14_svhn_projonly_mu00,91.85,47.07,96.03,0.5325,93.0,15,all_epochs,0,958.0
+m14_svhn_projonly_mu09,91.8,33.89,97.98,0.5258,46.0,15,all_epochs,0,917.6
+m14_svhn_purge_mu00,92.91,62.39,97.37,0.5385,100.0,15,all_epochs,0,1004.0
+m14_svhn_purge_mu09,87.71,0.0,94.94,0.5415,100.0,15,all_epochs,0,1002.6
