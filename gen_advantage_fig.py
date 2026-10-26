@@ -1,5 +1,5 @@
 """
-Figure: what PURGE achieves, and what it guarantees.
+Figure: what EXCISE achieves, and what it guarantees.
 
 -> images/fig_advantage.png
 
@@ -35,7 +35,7 @@ M = [("Retrain\n(gold standard)",  0.00, 100.00, 92.5, "gold"),
      ("SCRUB",                    88.80,  97.70, 93.3, "base"),
      ("NegGrad+",                 84.80,  99.30, 94.2, "base"),
      ("projection only",          18.66,  99.90, 86.2, "abl"),
-     ("PURGE",                     1.87, 100.00, 86.1, "ours")]
+     ("EXCISE",                    1.87, 100.00, 86.1, "ours")]
 STYLE = {"gold": dict(c="#8e44ad", m="*", s=420),
          "base": dict(c=GREY,      m="o", s=110),
          "abl":  dict(c=AMBER,     m="s", s=110),
@@ -54,7 +54,7 @@ def panel_a(ax):
 
     # (text_x, text_y, ha, va, draw_connector)
     lab = {"Retrain\n(gold standard)": (13.0, 101.3, "left", "bottom", True),
-           "PURGE":                     (9.0,  99.55, "left", "top",   True),
+           "EXCISE":                    (9.0,  99.55, "left", "top",   True),
            "SalUn":                     (1.8,  96.75, "left", "top",   False),
            "Bad Teacher":              (32.0,  90.20, "left", "center",False),
            "SCRUB":                    (86.5,  97.25, "right","top",   False),
@@ -117,7 +117,7 @@ def main():
     half_space(b1, hard=False)
     half_space(b2, hard=True)
     b1.set_title("soft penalty\n(closest prior work)", fontsize=10, color=RED)
-    b2.set_title("hard constraint\n(PURGE)", fontsize=10, color=GREEN)
+    b2.set_title("hard constraint\n(EXCISE)", fontsize=10, color=GREEN)
     fig.text(0.735, -0.02,
              "(b) a retain-harming step (red) against the constraint $g_r$: a penalty\n"
              "biases the optimiser away from it; a projection deletes the half-space.",

@@ -27,12 +27,17 @@
 \usepackage{xcolor}
 \usepackage{pifont}
 \usepackage[hyphens]{url}
+\usepackage{placeins}
 
 % ---------- TMLR style, with a graceful fallback ----------
 \IfFileExists{tmlr.sty}{%
   \usepackage{tmlr}                 % anonymous submission (default)
   % camera-ready: \usepackage[accepted]{tmlr}
   % preprint:     \usepackage[preprint]{tmlr}
+  % tmlr.sty \def's \AND (author separator), and algorithmic \newcommand's
+  % its own \AND inside every algorithmic environment, which then fails.
+  % Keep tmlr's as \tmlrAND for author blocks and free the name.
+  \let\tmlrAND\AND\let\AND\relax
 }{%
   \PackageWarning{purge}{tmlr.sty not found -- using fallback layout.
     Download tmlr.sty/tmlr.bst for the official format.}%
@@ -45,7 +50,7 @@
 \graphicspath{{../images/}}
 
 % ---------- macros ----------
-\newcommand{\ours}{\textsc{Purge}}
+\newcommand{\ours}{\textsc{Excise}}
 \newcommand{\klr}{\texttt{kl\_retain}}
 \newcommand{\KL}{\mathrm{KL}}
 \newcommand{\CE}{\mathrm{CE}}
@@ -92,163 +97,92 @@
 \maketitle
 
 \begin{abstract}
-Machine unlearning must remove the influence of specific training data while
-preserving model utility---a forget--retain trade-off dual to the
-stability--plasticity trade-off of continual learning. We exploit this duality
-and adapt A-GEM gradient projection so that the forget update is projected onto
-the retain-safe half-space $\{u : \langle u, \gr\rangle \ge 0\}$ at every step.
-The key design choice is \emph{where} the projection is applied: we project the
-\emph{post-momentum update actually applied to the weights}, rather than the raw
-gradient. This makes the resulting per-step retain-safety guarantee hold exactly
-for the optimiser that is actually run---momentum included---rather than for an
-idealised momentum-free surrogate. We show that momentum is not incidental:
-removing it to make the analysis convenient causes the method to stop forgetting
-on five of six datasets (e.g.\ forget accuracy $95.9\%$ on MNIST, $73.7\%$ on
-CIFAR-100), so a guarantee stated for the momentum-free update would describe a
-method that does not unlearn.
-We instantiate this in \ours{}, which combines (i)~the projected update,
-(ii)~a retain-confusion forget objective targeting the model's natural output
-distribution on retained data, (iii)~KD anchoring, and (iv)~dual stopping with
-explicit retain-loss and forget-accuracy budgets. A separation theorem shows
-that gradient ascent, SCRUB, and SalUn each admit single steps that strictly
-increase retain loss, whereas \ours{} cannot.
-Across six datasets and 31 class-level forgetting tasks with ResNet-18 (three
-seeds on the five 10-class datasets; 75 runs), \ours{} attains per-dataset mean
-forget accuracy $\le 6.2\%$ (STL-10 requires a larger epoch budget to reach
-$2.8\%$), retain accuracy $\ge 97.2\%$
-($92.2\%$ on CIFAR-100), and membership-inference AUROC within $0.035$ of the
-$0.5$ conventionally taken as ideal on all six datasets. That convention,
-however, does not survive checking. On CIFAR-10 the same attack scores $0.69$
-against a retrained reference that never saw the forgotten class---higher than
-against the un-unlearned original---so calibrating against a retrained model
-rather than against $0.5$ reverses the ranking of methods. On PathMNIST the
-reference is not even constant: it ranges from $0.31$ to $0.70$ depending on
-which class is forgotten, so no fixed target is correct and a method can be
-judged good or bad on one dataset according to which deletion request it
-receives. Step-level logging confirms the guarantee empirically:
-the projection is active at $100\%$ of steps, and $\langle u_t,\gr\rangle \ge 0$
-holds at every step to floating-point precision. \added{On BatchNorm backbones,
-forgetting achieved against frozen normalisation statistics is undone by
-recomputing them, without touching a weight; a variant that keeps the statistics
-consistent with the weights throughout unlearning keeps forget accuracy at or
-below the chance-level target under that attack on all ten CIFAR-10 classes and
-on MNIST, at roughly seven times the compute.}
+Machine unlearning must remove a class's influence from a trained network
+without damaging what the network should keep---a forget--retain trade-off dual
+to the stability--plasticity trade-off of continual learning. We adapt A-GEM's
+gradient projection so that every unlearning step lies in the retain-safe
+half-space $\{u : \langle u,\gr\rangle \ge 0\}$, and apply it to the
+post-momentum update the optimiser actually takes rather than to the raw
+gradient. The resulting per-step retain-safety guarantee is exact for the
+deployed optimiser; removing momentum to simplify the analysis instead stops
+forgetting on five of six datasets. \ours{} pairs the projected update with a
+retain-confusion forget objective and stopping rules derived from explicit
+tolerances. Across six datasets and 31 class-level forgetting tasks with
+ResNet-18 it drives forget accuracy to the chance level on all six (two at a
+longer epoch budget), with retain accuracy at or above $97.2\%$ on the 10-class
+datasets, and step-level logs confirm the constraint at every step.
+\added{On BatchNorm backbones, forgetting learned against frozen normalisation
+statistics is undone by recomputing them; a variant that keeps the statistics
+consistent with the weights survives that attack on every CIFAR-10 class and on
+MNIST, making it, to our knowledge, the only unlearning method for BatchNorm
+ResNets shown to do so.} We also find that the conventional membership-inference
+target of $0.5$ is the wrong reference point: a retrained model scores $0.69$ on
+CIFAR-10, and between $0.31$ and $0.70$ across PathMNIST classes.
 \end{abstract}
 
 % ============================================================
 \section{Introduction}\label{sec:intro}
 
 Trained models increasingly need to demonstrably \emph{forget} specific
-data---to honour data-deletion requests, revoke expired licences, or remove
-poisoned samples. Retraining from scratch without the offending data satisfies
-this exactly, but is computationally prohibitive: a ResNet-18 on CIFAR-10 takes
-${\sim}45$ minutes on a single A100, and production-scale models take days to
-weeks. \emph{Machine unlearning} (MU) asks whether we can do better: can we modify an
-already-trained model so that it behaves as if a specified subset of its
-training data had never been present, without paying for full retraining?
+data---to honour deletion requests, revoke expired licences, or remove poisoned
+samples. Retraining without the data does this exactly but is costly
+(${\sim}45$ minutes for a ResNet-18 on CIFAR-10 on one A100, days for production
+models), so \emph{machine unlearning} (MU) asks how to modify a trained model so
+that it behaves as if the data had never been seen. The hard part is not erasing
+the data's influence but doing so \emph{without collateral damage}: what must be
+erased and what must be kept live in the same weights, so any step that degrades
+the forgotten data also perturbs everything else.
 
-The difficulty is not removing the data's influence. It is removing that
-influence \emph{without collateral damage}. A model is a single set of weights
-in which what we want to erase and what we want to keep are thoroughly
-entangled; any update that degrades the model's behaviour on the forgotten data
-also perturbs its behaviour on everything else. An unlearning method is
-therefore useful only to the extent that it can control that second effect, and
-most of the difficulty in the field lies there rather than in the forgetting
-itself.
+\paragraph{The mirror image in continual learning.}
+Continual learning (CL) faces the same problem with the sign reversed: learn a
+new task while protecting old ones. Its strongest answer is not a penalty but a
+\emph{constraint on the update}. A-GEM \citep{chaudhry2019agem} projects any
+update $v$ with $\langle v, g_{\text{old}}\rangle < 0$ onto the half-space
+$\{u : \langle u, g_{\text{old}}\rangle \ge 0\}$, so a step that would increase
+old-task loss to first order is never taken. Unlearning lacks exactly this
+guarantee: existing methods control retain damage with weighted objectives,
+saliency masks or alternating updates (\S\ref{sec:related}), which make damage
+unlikely rather than impossible. We treat the retain set as CL's ``old task'' and
+adopt the half-space constraint as the update rule for unlearning. The duality
+has been noted before \citep{kurmanji2023unbounded,nguyen2020variational}, and
+the forget--retain conflict has been targeted by a soft regulariser
+\citep{patel2025learning}\added{ and by projecting updates away from a retain
+gradient subspace \citep{hoang2024learn}}; what has not been done is to enforce
+the half-space constraint exactly, at every step, on the vector the optimiser
+applies.
 
-\paragraph{A field that already solved the mirror image of this problem.}
-Continual learning (CL) studies models that must acquire new tasks in
-sequence.
-Its central obstacle is \emph{catastrophic forgetting}: training on task~$B$
-overwrites the weights that encoded task~$A$, and accuracy on~$A$ collapses.
-The problem is structurally identical to ours with one sign reversed. Continual
-learning must change the model to serve a new objective while protecting what it
-already knows; unlearning must change the model to \emph{destroy} designated
-knowledge while protecting the rest. In both cases a new objective pulls the
-weights in some direction, and in both cases the engineering problem is to
-prevent that pull from damaging knowledge that must survive.
+\paragraph{What it takes.}
+Three design decisions make the transplant work. \emph{Project the update, not
+the gradient}: with momentum, the applied vector is the accumulated update, and
+projecting the gradient certifies nothing about it
+(Proposition~\ref{prop:counter}). Removing momentum would make the analysis
+exact but stops forgetting on five of six datasets
+(\S\ref{sec:momentum_ablation}), so we project the post-momentum update and make
+the guarantee hold for the optimiser that runs. \emph{Push the forgotten class
+toward the model's own retain-confusion distribution}, rather than the uniform
+distribution no trained model produces (\S\ref{sec:forget_obj}). \emph{Stop on
+explicit tolerances} for retain loss and forget accuracy rather than on an epoch
+count (\S\ref{sec:stopping}).
 
-That reframing matters because continual learning has spent a decade developing
-machinery for exactly this, and the strongest of it is not a penalty term but a
-\emph{constraint on the update itself}. Averaged Gradient Episodic Memory
-(A-GEM) \citep{chaudhry2019agem} keeps a small memory of old-task examples and,
-at every step, computes the gradient $g_{\text{old}}$ of the loss on that
-memory. If the proposed update $v$ would increase old-task loss to first
-order---detectable as $\langle v, g_{\text{old}}\rangle < 0$---A-GEM replaces
-$v$ with its projection onto the half-space
-$\{u : \langle u, g_{\text{old}}\rangle \ge 0\}$, the smallest correction that
-removes the conflicting component. The old task is protected not because a
-hyperparameter has been tuned to make damage unlikely, but because a damaging
-step is not in the set of steps the optimiser can take.
-
-\paragraph{Our insight.}
-This is precisely the guarantee unlearning lacks. Existing methods control
-retain-set damage through weighted objectives, saliency masks, or alternating
-updates (\S\ref{sec:related}), all of which make retain damage \emph{unlikely}
-when their hyperparameters are set well, and none of which make it
-\emph{impossible}. We therefore treat the retain set as a continual-learning
-``old task'' and the forget objective as the ``new task,'' and adopt the
-half-space constraint as the update rule for unlearning rather than as a
-regulariser added to it. The duality between the two problems has been observed
-before \citep{kurmanji2023unbounded,nguyen2020variational}, and the
-forget--retain gradient conflict has recently been targeted by a \emph{soft}
-regulariser \citep{patel2025learning}; what has not been done is to enforce the
-constraint exactly, at every step, on the vector the optimiser actually applies.
-Doing so is what turns an empirical tendency into a per-step theorem.
-
-\paragraph{Three challenges, and what is novel in how we meet them.}
-Transplanting the constraint is not mechanical, and each obstacle required a
-design decision that we believe is novel in this setting.
-
-\emph{Challenge 1: a guarantee about the wrong vector is not a guarantee.}
-Practical unlearning uses stochastic gradient descent (SGD) with momentum, so the
-vector subtracted from the weights is not the current gradient $g_{\text{f}}$
-but the momentum-accumulated update $u_t$, which mixes in directions from
-earlier steps. Projecting $g_{\text{f}}$ constrains $g_{\text{f}}$ and nothing
-else: $\langle u_t, \gr \rangle$ can still be negative even when every
-individual projected gradient was retain-safe
-(Proposition~\ref{prop:counter}). Two responses are available:
-
-\begin{itemize}
-\item \emph{Disable momentum}, so that the applied update equals the projected
-gradient and the analysis becomes exact.
-\item \emph{Project the accumulated update} $u_t$ rather than the gradient, so
-that the constraint binds the vector actually applied.
-\end{itemize}
-
-The first is the trap. It yields a clean theorem about a method that does not
-work: with momentum removed and all else fixed, \ours{} stops forgetting on five
-of six datasets (\S\ref{sec:momentum_ablation}), so the guarantee would be exact
-for an algorithm that fails at its own task. We adopt the second, and regard
-this---enforcing the constraint on the post-momentum update, so that the theorem
-and the implementation describe the same object---as the paper's central
-methodological contribution. Two further ordering decisions (where to clip, and
-restoring the projected update's magnitude) turn out to be load-bearing for the
-same reason (\S\ref{sec:optimiser}).
-
-\emph{Challenge 2: what should the forgotten data be pushed toward?} Driving
-forget-set predictions to the uniform distribution is the common choice, but no
-trained model produces uniform outputs, so a model driven there remains
-distinguishable from a retrained one. We instead target the model's own average
-output on retained data---its \emph{retain-confusion distribution}---which is a
-behaviour a retrained model can plausibly exhibit (\S\ref{sec:forget_obj}).
-
-\emph{Challenge 3: when should unlearning stop?} Erasure that runs too long
-damages the retained model, and erasure that overshoots the retrained model's
-behaviour is itself detectable. We derive stopping rules directly from the
-tolerances of our optimisation problem rather than fixing an epoch count
-(\S\ref{sec:stopping}).
-
-A fourth issue emerged from the experiments rather than the design. \added{Forget
-batches contain a single class and would corrupt BatchNorm running statistics,
-so \ours{} freezes them during unlearning---and the weights then learn to forget
-\emph{relative to} statistics that an attacker can replace. Recomputing them on
-retained data restores forget accuracy from ${\sim}1\%$ to ${\sim}100\%$ without
-modifying a single weight.} We diagnose this\added{,} show that normalisation
-schemes without running statistics remove it structurally
-(\S\ref{sec:bn_results})\added{, and give a variant that keeps BatchNorm by
-recomputing its statistics from retained data throughout unlearning, which
-survives the attack (\S\ref{sec:bn_robust})}.
+\paragraph{Forgetting that survives the attack.}
+A fourth issue came from the experiments. \added{Forget batches contain a single
+class and would corrupt BatchNorm running statistics, so the method freezes them
+during unlearning---and the weights then learn to forget \emph{relative to}
+statistics an attacker can replace: recomputing them on retained data restores
+forget accuracy from ${\sim}1\%$ to ${\sim}100\%$ without changing a weight
+(\S\ref{sec:bn_results}). The same attack reaches beyond us. Concurrent work
+\todo{cite the concurrent BatchNorm-recalibration paper} applies it to prior
+unlearning methods and, in its reproductions, recovers the forgotten class for
+every method it evaluates except SCRUB, which is spared only because it never
+forgot ($89\%$ forget accuracy; Appendix~\ref{sec:distance}). In our own
+reproductions SalUn and Bad Teacher were unaffected, so whether a prior method
+survives depends on how it was run. BN-robust \ours{} does not leave this to the
+protocol: it keeps the statistics consistent with the weights throughout
+unlearning, and its forgetting survives the attack on every CIFAR-10 class, on
+MNIST, and when the attacker chooses the recalibration data
+(\S\ref{sec:bn_robust}). To our knowledge it is the only unlearning method for
+BatchNorm ResNets shown to survive recalibration under every protocol tried, and
+in that sense the state of the art for this setting.}
 
 \begin{figure}[t]
 \centering
@@ -264,89 +198,43 @@ when either tolerance is met.}
 \label{fig:pipeline}
 \end{figure}
 
-Figure~\ref{fig:pipeline} shows the resulting step, and
-Figure~\ref{fig:advantage} places the method against the alternatives on both
-what it achieves and what it guarantees.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\textwidth]{fig_advantage.png}
-\caption{\textbf{What \ours{} achieves, and what it guarantees.}
-\textbf{(a)}~Measured outcomes on CIFAR-10 class~0
-(Table~\ref{tab:cifar10}): forgetting requires forget accuracy at or below the
-$10\%$ chance level, and utility requires retain accuracy to stay high. SCRUB
-and NegGrad+ keep the retained model intact by barely forgetting; Bad Teacher
-forgets more but damages the model; \ours{} is the only method reaching the
-target region with retain accuracy fully preserved. \textbf{(b)}~The structural
-difference, which no accuracy table can show. Against the retain constraint
-$\gr$, a soft penalty leaves retain-harming steps (red) inside the feasible
-set---it makes them costly, not impossible---whereas projecting onto
-$\{u : \langle u,\gr\rangle \ge 0\}$ removes that half-space entirely
-(Theorem~\ref{thm:separation}(iv)).}
-\label{fig:advantage}
-\end{figure}
-
 \paragraph{Contributions.}
-\textbf{(1) Constrained-optimisation framing.} We pose class-level unlearning as
-constrained optimisation (Eq.~\ref{eq:problem}) with a retain-loss budget, a
-forget-distribution tolerance, and a trust region, so that each algorithmic
-component enforces a specific constraint rather than acting as a heuristic
-(\S\ref{sec:method} maps each constraint to the mechanism that realises it).
+\textbf{(1)}~A constrained-optimisation formulation of class unlearning
+(Eq.~\ref{eq:problem}) in which each mechanism enforces one constraint.
+\textbf{(2)}~\ours{}: A-GEM projection as the \emph{update rule} of unlearning,
+applied to the post-momentum update, with clipping before accumulation and
+magnitude-preserving projection. \textbf{(3)}~An exact per-step retain-safety
+theorem for that optimiser, a separation theorem showing that gradient ascent,
+SCRUB, SalUn and soft conflict penalties admit retain-harming steps, and a
+step-level audit of the guarantee on real runs. \textbf{(4)}~\added{A
+BatchNorm-recalibration failure mode and a fix that keeps BatchNorm, making
+\ours{} the only method we know of whose forgetting survives recalibration on
+BatchNorm ResNets under every protocol tried.} We also show that the
+conventional MIA target of $0.5$ is the wrong reference point for class
+unlearning (Appendix~\ref{sec:mia}).
 
-\textbf{(2) \ours{}: a hard per-step constraint, matched to the implementation.}
-Our novelty is not the projection operator, which we take from continual
-learning, but the claim that it can serve as the \emph{update rule} for
-unlearning and the demonstration of what that requires: applying it to the
-post-momentum update, clipping before accumulation, and preserving magnitude
-under projection. We combine it with the retain-confusion forget objective and
-dual stopping.
+% ============================================================
+\section{Related Work}\label{sec:related}
 
-\textbf{(3) Theory plus an empirical audit of it.}
-Theorem~\ref{thm:retain_safety} gives an exact per-step retain-safety guarantee
-for the projected-momentum update, with the update norm bounded by $c/(1-\mu)$.
-Theorem~\ref{thm:separation} shows that gradient ascent, SCRUB, and SalUn each
-admit steps that strictly increase retain loss. We then audit the guarantee at
-step level on real runs rather than asserting it (\S\ref{sec:alignment}).
-
-\added{\textbf{(4) A normalisation failure mode, and a fix that keeps BatchNorm.}
-Recalibrating BatchNorm statistics undoes \ours{}'s forgetting without touching
-a weight, while leaving the baselines we reproduced unaffected
-(\S\ref{sec:bn_results}). Keeping the statistics consistent with the weights
-throughout unlearning, and stopping on the forget accuracy the shipped model
-will actually have, closes it: forget accuracy stays at or below the
-chance-level target under the attack on all ten CIFAR-10 classes and on MNIST
-(\S\ref{sec:bn_robust}).}
-
-\subsection{Related Work and Positioning}\label{sec:related_intro}
-
-Approximate unlearning methods occupy different points on the privacy--utility
-frontier, and the retain side is where they differ most. \textbf{Gradient
-ascent} \citep{thudi2022unrolling} maximises forget-set loss with no mechanism
-protecting retain accuracy, collapsing test accuracy to ${\sim}38\%$ on
-CIFAR-10. \textbf{SalUn} \citep{fan2024salun} confines random-label updates to a
-saliency mask---effective in practice, but with no formal retain guarantee and
-no control over how much is forgotten. \textbf{SCRUB}
-\citep{kurmanji2023unbounded} alternates forget and retain steps balanced by a
-weight $\lambda$, so the balance is tuned rather than enforced; in our
-reproduction it preserves retain accuracy ($97.7\%$) by barely forgetting at all
-(forget accuracy $88.8\%$, Table~\ref{tab:cifar10}). \textbf{NegGrad+}
-\citep{thudi2022unrolling} adds a retain-loss term as a weighted sum, again
-without a guarantee that retain loss is controlled. Closest to us,
-\citet{patel2025learning} diagnose the same forget--retain gradient conflict but
-resolve it with a soft regulariser that rewards positive alignment. A fuller
-treatment, including exact unlearning and distillation-based methods, appears in
-\S\ref{sec:related}.
-
-The distinction we draw is structural rather than numerical, so
-Table~\ref{tab:properties} compares properties of each method's \emph{definition}
----checkable against the published update rule, without relying on our
-reimplementation of it. A soft penalty biases the optimiser toward retain-safe
-steps but leaves harmful steps feasible: for any finite penalty weight, a
-sufficiently large forget-loss reduction still makes a retain-harming step
-preferable. A projection removes those steps from the feasible set altogether
-(Theorem~\ref{thm:separation}(iv)). The final row is the one we would emphasise,
-and the one \S\ref{sec:momentum_ablation} makes concrete: a guarantee proved for
-a momentum-free surrogate says nothing about a run that uses momentum.
+\emph{Exact} unlearning retrains on shards \citep{bourtoule2021sisa} or certifies
+removal for convex models \citep{guo2020certified}. \emph{Approximate} methods
+modify the trained model: gradient ascent and NegGrad+ \citep{thudi2022unrolling}
+maximise forget loss, the latter with a weighted retain term; SalUn
+\citep{fan2024salun} confines random-label updates to a saliency mask; Fisher
+methods and SSD \citep{golatkar2020eternal,foster2024ssd} dampen parameters by
+estimated importance; Bad Teacher \citep{chundawat2023badteacher} and SCRUB
+\citep{kurmanji2023unbounded} use distillation, SCRUB alternating forget and
+retain steps. Each balances forgetting against retain damage through a weight, a
+mask or a schedule, so retain damage is discouraged rather than excluded
+(Theorem~\ref{thm:separation}). Closest to us are methods that address the
+forget--retain gradient conflict directly: \citet{patel2025learning} with a soft
+regulariser that rewards positive alignment, and \added{\citet{hoang2024learn}
+by stepping orthogonally to a gradient subspace estimated for the retained
+data}. \ours{} instead imposes A-GEM's half-space constraint
+\citep{chaudhry2019agem} against the current retain gradient at every step, on
+the post-momentum update the optimiser applies, which is what makes its guarantee
+exact for the deployed optimiser. Table~\ref{tab:properties} summarises the structural
+difference; Appendix~\ref{app:related} gives the full comparison.
 
 \begin{table}[t]
 \centering
@@ -379,40 +267,18 @@ Guarantee holds for the optimiser actually run & \xmark & \xmark & \xmark & \xma
 % ============================================================
 \section{Problem Formulation}\label{sec:problem}
 
-Let $f_\theta : \mathcal{X} \to \Delta^K$ be a trained $K$-class classifier with
-pre-unlearning weights $\theta_0$, mapping an input to a probability vector over
-$K$ classes. Write $\sigma(\cdot)$ for the softmax and
-$p_\theta(x) := \sigma(f_\theta(x)) \in \Delta^K$ for the model's predicted
-distribution on input $x$. The training set splits into the \emph{forget set}
-$\Df$, whose influence must be removed, and the \emph{retain set}
-$\Dr = \mathcal{D}_{\mathrm{train}} \setminus \Df$, which must be preserved; we
-write $x_f$ for an input drawn from $\Df$ and $(x,y)$ for a labelled retain
-example. $\CE(\cdot,\cdot)$ denotes cross-entropy and $\KL(\cdot\|\cdot)$ the
-Kullback--Leibler divergence.
-
-We also fix the four quantities used to evaluate unlearning throughout, so that
-they are available before the algorithm is stated. \emph{Test accuracy} (TA) is
-measured on the held-out test set and reports how much of the model's general
-utility survives. \emph{Forget accuracy} (FA) is measured on $\Df$; because a
-retrained model has never seen those samples, a fully unlearned model should
-drive FA down to at most the chance level $100/K\%$. \emph{Retain accuracy} (RA)
-is measured on $\Dr$ and should not move. Finally, a
-\emph{membership-inference attack} (MIA) tries to distinguish forget-set
-training samples from forget-set test samples, and we score it by the area under
-its receiver-operating-characteristic curve (AUROC); this is conventionally read
-against an ideal of $0.5$, a convention \S\ref{sec:mia} shows to be the wrong
-reference point.
-
-Define the \emph{retain-confusion distribution} $p_r$ as the average predicted
-distribution of the frozen base model over the retain set:
+Let $f_\theta$ be a trained $K$-class classifier with weights $\theta_0$,
+$\sigma$ the softmax, and $p_\theta(x) = \sigma(f_\theta(x))$. The training set
+splits into a forget set $\Df$ and a retain set $\Dr$. We evaluate with test
+accuracy (TA, held-out data), forget accuracy (FA, on $\Df$; a fully unlearned
+model reaches at most the chance level $100/K\%$), retain accuracy (RA, on
+$\Dr$), and the AUROC of a membership-inference attack (MIA) between forget-class
+training and test samples. The \emph{retain-confusion distribution} is the base
+model's average prediction on retained data,
 \begin{equation}\label{eq:retain_confuse}
-p_r = \frac{1}{|\Dr|}\sum_{x \in \Dr} \sigma(f_{\theta_0}(x)).
+p_r = \frac{1}{|\Dr|}\sum_{x \in \Dr} \sigma(f_{\theta_0}(x)),
 \end{equation}
-This captures how the model naturally confuses classes on retained data---a more
-realistic unlearning target than the uniform distribution, which no trained
-model ever produces.
-
-We pose unlearning as a constrained optimisation:
+and we pose unlearning as constrained optimisation:
 \begin{equation}\label{eq:problem}
 \begin{aligned}
 \theta^* = \arg\min_{\theta}\; & \lossf(\theta;\Df) \\
@@ -421,14 +287,634 @@ We pose unlearning as a constrained optimisation:
 & \|\theta - \theta_0\| \le R,
 \end{aligned}
 \end{equation}
-where
-\begin{align*}
-\lossf &= \mathbb{E}_{x_f}\!\big[\KL(p_\theta(x_f)\|p_r)\big], &
-\lossr &= \mathbb{E}_{(x,y)}\!\big[\CE(f_\theta(x),y)\big] + \beta\,\losskd .
-\end{align*}
-Here $\beta \ge 0$ weights knowledge-distillation anchoring, $\epsilon_R$ is the
-retain-loss tolerance, $\epsilon_F$ the forget-distribution tolerance, and $R$ a
-trust-region radius enforced via early stopping.
+with $\lossf = \mathbb{E}_{x_f}[\KL(p_\theta(x_f)\|p_r)]$ and
+$\lossr = \mathbb{E}_{(x,y)}[\CE(f_\theta(x),y)] + \beta\,\losskd$, where $\beta$
+weights a distillation anchor, $\epsilon_R$ and $\epsilon_F$ are tolerances a
+practitioner sets, and $R$ is a trust region enforced by early stopping. Retain
+safety is a hard constraint rather than a penalty: a Lagrangian relaxation would
+turn it back into the soft treatment whose feasible set still contains
+retain-harming steps (Theorem~\ref{thm:separation}(iv)). \ours{} realises each
+constraint with the cheapest mechanism that enforces it exactly, at every step,
+on the vector actually applied (Table~\ref{tab:constraint_map},
+Appendix~\ref{app:method}).
+
+% ============================================================
+\section{The \ours{} Algorithm}\label{sec:method}
+
+Algorithm~\ref{alg:purge} gives the update. Each step computes a retain gradient
+$\gr$ on a retain mini-batch (cross-entropy plus the distillation anchor) and a
+forget gradient $\gf$ on a forget mini-batch.
+
+\begin{algorithm}[t]
+\caption{\ours{} unlearning (projected-momentum update)}\label{alg:purge}
+\begin{algorithmic}[1]
+\REQUIRE Trained model $\theta$, forget set $\Df$, retain set $\Dr$;
+         lr $\eta$, momentum $\mu$, clip $c$, weight decay $\lambda_{\mathrm{wd}}$
+\ENSURE Unlearned model $\theta^*$
+\STATE $\theta_{\text{orig}} \leftarrow \text{freeze}(\text{copy}(\theta))$;\quad
+       set all BatchNorm layers to \texttt{eval} mode
+\STATE $p_r \leftarrow \frac{1}{|\Dr|}\sum_{x \in \Dr}\sigma(\theta_{\text{orig}}(x))$
+\STATE $L_0 \leftarrow \CE(\theta,\Dr)$;\quad $\text{budget} \leftarrow \alpha L_0$;\quad
+       $v \leftarrow 0$
+\FOR{epoch $=1$ to $T$}
+  \FOR{$(x_f,y_f)$ in $\Df$}
+    \STATE Sample $(x_r,y_r)$ from $\Dr$
+    \STATE $\gr \leftarrow \nabla_\theta[\CE(f_\theta(x_r),y_r) + \beta\losskd]$
+    \STATE $\gf \leftarrow \nabla_\theta\lossf(\theta;x_f)$
+    \STATE $d \leftarrow \mathrm{clip}_c\!\big(\gf + \lambda_{\mathrm{wd}}\theta\big)$
+           \hfill\textit{// clip BEFORE accumulation}
+    \STATE $v \leftarrow \mu v + d$
+           \hfill\textit{// momentum}
+    \IF{$\langle v, \gr\rangle < 0$}
+      \STATE $u \leftarrow v - \frac{\langle v,\gr\rangle}{\|\gr\|^2}\gr$;\quad
+             $u \leftarrow u\,\|v\|/\|u\|$
+             \hfill\textit{// project the update, rescale}
+    \ELSE
+      \STATE $u \leftarrow v$
+    \ENDIF
+    \STATE $\theta \leftarrow \theta - \eta u$
+  \ENDFOR
+  \IF{$\mathrm{FA}(\theta,\Df) \le \epsilon_F$ \textbf{or} $\CE(\theta,\Dr) > \text{budget}$}
+    \STATE \textbf{break}
+  \ENDIF
+\ENDFOR
+\RETURN $\theta^* \leftarrow \theta$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Projection onto the Retain-Safe Half-Space}\label{sec:projection}
+
+When a candidate update $v$ satisfies $\langle v,\gr\rangle < 0$, moving along it
+would increase the retain loss to first order, and we replace it by its
+projection
+\begin{equation}\label{eq:projection}
+\Pi_{\gr}(v) = v - \frac{\langle v,\gr\rangle}{\|\gr\|^2}\,\gr,
+\qquad \langle \Pi_{\gr}(v),\gr\rangle = 0 .
+\end{equation}
+This is A-GEM's operator: the minimum-norm correction that restores
+feasibility, at the cost of one extra backward pass. What changes is its role.
+In A-GEM it occasionally corrects a process whose objective already points the
+right way; in unlearning, erasing a class and keeping the rest are directly
+opposed, and the projection fires at every step of our runs
+(Appendix~\ref{sec:alignment}). It becomes the optimiser's defining step rather
+than a safeguard, which has three consequences for how it must be applied.
+
+\subsection{Which Vector to Project}\label{sec:optimiser}
+
+\emph{(i) Project the update, not the gradient.} \ours{} uses SGD with momentum
+$\mu$, weight decay and clipping $c$. The vector applied to the weights is the
+accumulated update, so we accumulate first and project afterwards
+(Algorithm~\ref{alg:purge}, lines 10--15); projecting $\gf$ instead leaves the
+applied update unconstrained (Proposition~\ref{prop:counter},
+Figure~\ref{fig:projorder}). \emph{(ii) Clip before accumulating.} Clipping the
+per-step ingredient keeps momentum's $1/(1-\mu)$ amplification and gives
+$\|v_t\| \le c/(1-\mu)$; clipping the final update would cap it at $c$, and since
+raw forget gradients are ${\sim}100\times$ the clip threshold, this ordering
+decides whether the model forgets at all. \emph{(iii) Preserve magnitude.}
+Projection shrinks the update by $\sin\vartheta$, which vanishes when forget and
+retain gradients are nearly opposed, so we rescale the projected update to the
+pre-projection norm; $\langle u_t,\gr\rangle = 0$ is unaffected.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{fig_projection_order.png}
+\caption{\textbf{Why the projection is applied to the update, not the
+gradient} (Proposition~\ref{prop:counter}). Both panels show step~1, whose
+constraint is $\gr$; the retain-safe half-space is shaded. \textbf{(a)}~Each
+ingredient is individually retain-safe---$d_1$ lies on the boundary, and
+$\mu v_0$ was certified against step~0's constraint---yet their sum, the vector
+actually applied, lies in the harming half-space with
+$\langle v_1,\gr\rangle = -\mu$. The violation grows with $\mu$.
+\textbf{(b)}~Projecting the accumulated update instead returns it to the
+boundary, so the certificate is issued against the constraint in force where
+the step is taken.}
+\label{fig:projorder}
+\end{figure}
+
+\subsection{Forget Objective, Stopping, and Normalisation}\label{sec:forget_obj}
+
+The \klr{} objective drives forget-set predictions toward the retain-confusion
+distribution rather than the uniform one,
+\begin{equation}\label{eq:kl_retain}
+\mathcal{L}_{\text{KL-R}} = \KL\!\left(\log\sigma(f_\theta(x_f)) \,\|\, p_r\right).
+\end{equation}
+Under the projected-momentum optimiser it forgets further than gradient ascent at
+equal test accuracy (FA $2.1\%$ against $8.2\%$ on CIFAR-10 class~0) and is
+within noise of a uniform target on MIA, so we claim a better forget
+\emph{direction}, not a closer imitation of a retrained model
+(Appendix~\ref{app:method}).
+
+\paragraph{Dual stopping.}\label{sec:stopping}
+Unlearning halts if the retain loss exceeds $\alpha$ times its initial value,
+and completes when FA reaches the target---by default the chance level
+$100/K\%$---checked within epochs, because FA can fall by tens of points inside
+one.
+
+\paragraph{BatchNorm.}\label{sec:bn}
+Class-homogeneous forget batches would corrupt BatchNorm running statistics, so
+\ours{} freezes them. \added{The weights then learn to forget relative to those
+frozen statistics; \S\ref{sec:bn_results} shows that this forgetting does not
+survive recomputing them, and BN-robust \ours{} recomputes them from retained
+data before every step instead (\S\ref{sec:bn_robust}).} A distillation anchor to
+the frozen base model stabilises retain behaviour.
+
+% ============================================================
+\section{Theoretical Guarantees}\label{sec:theory}
+
+\begin{theorem}[Exact per-step retain safety under momentum]\label{thm:retain_safety}
+Let the composite retain objective on the sampled retain mini-batch,
+$\Lrt = \lossr + \beta\losskd$, be $L$-smooth, and let
+$\gr = \nabla_\theta\Lrt(\theta_t)$. Let \ours{} run the update of
+Algorithm~\ref{alg:purge}: $\|d_t\| \le c$ by clipping,
+$v_t = \mu v_{t-1} + d_t$ with $v_{-1}=0$ and $\mu \in [0,1)$,
+$u_t = \Pi_{\gr}(v_t)\,\|v_t\|/\|\Pi_{\gr}(v_t)\|$ when
+$\langle v_t,\gr\rangle<0$ and $u_t = v_t$ otherwise, and
+$\theta_{t+1} = \theta_t - \eta u_t$. Then, exactly and unconditionally,
+\begin{equation}\label{eq:thm1}
+\langle u_t,\gr\rangle \ge 0,
+\qquad \|u_t\| \;=\; \|v_t\| \;\le\; \frac{c}{1-\mu},
+\qquad \Lrt(\theta_{t+1}) \;\le\; \Lrt(\theta_t) + \tfrac{1}{2}L\eta^2\Big(\frac{c}{1-\mu}\Big)^{\!2}.
+\end{equation}
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+The first claim is immediate: if $\langle v_t,\gr\rangle \ge 0$ then $u_t=v_t$;
+otherwise $\langle \Pi_{\gr}(v_t),\gr\rangle = 0$ identically, and rescaling by
+a positive scalar preserves this. For the second, $\Pi_{\gr}$ is the orthogonal
+projection onto $\{u : \langle u,\gr\rangle = 0\}$, so the rescaling restores
+$\|u_t\|=\|v_t\|$; unrolling the buffer gives
+$v_t = \sum_{k=0}^{t}\mu^{t-k}d_k$, hence
+$\|v_t\| \le c\sum_{j=0}^{t}\mu^{j} < c/(1-\mu)$. The third follows from
+$L$-smoothness,
+$\Lrt(\theta_{t+1}) \le \Lrt(\theta_t) - \eta\langle u_t,\gr\rangle
++ \tfrac{1}{2}L\eta^2\|u_t\|^2$, where the first-order term is non-positive by
+claim one and $\|u_t\|$ is bounded by claim two. The full proof, together with the three supporting lemmas, is given in Appendix~\ref{app:thm1} (Theorem~\ref{thm:app_main}).
+\end{proof}
+
+The first-order change in the sampled retain loss is non-positive at every step,
+and, unlike guarantees stated for momentum-free surrogates, the analysed $u_t$ is
+the vector the code applies. The bound concerns the sampled mini-batch objective,
+not the population retain loss (\S\ref{sec:limitations}).
+Figure~\ref{fig:guarantee} audits the theorem on a logged run: every step
+conflicts before projection, none after, and the norm bound holds
+(Appendix~\ref{sec:alignment}).
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{fig_guarantee.png}
+\caption{\textbf{Theorem~\ref{thm:retain_safety} audited on a real run}
+(CIFAR-10 class~0, 120 steps). \textbf{(a)}~Alignment with the retain gradient,
+normalised to $\cos(\cdot,\gr)$. Before projection every step lies in the
+retain-harming half-space (mean $-0.77$); after projection the alignment is
+indistinguishable from zero ($|\cos| \le 7.4\times10^{-7}$, the float32
+accumulation scale). \textbf{(b)}~The applied update never exceeds the bound
+$c/(1-\mu)=10$ of Eq.~\ref{eq:thm1}, peaking at $9.16$---tight, but respected.}
+\label{fig:guarantee}
+\end{figure}
+
+\begin{theorem}[Per-step separation]\label{thm:separation}
+For any model $\theta_0$ with retain gradient $\gr$:
+\textbf{(i)}~GA's update $+\eta\gf$ strictly increases retain loss to first
+order whenever $\langle\gf,\gr\rangle>0$;
+\textbf{(ii)}~SCRUB's $-\gf+\lambda\gr$ can have $\langle\cdot,\gr\rangle<0$ for
+any fixed $\lambda$;
+\textbf{(iii)}~SalUn's masked random-label gradient has unconstrained sign with
+respect to $\gr$;
+\textbf{(iv)}~a soft conflict regulariser that adds $\rho\,\phi(\langle
+g,\gr\rangle)$ with $\phi$ decreasing---the approach of the closest prior work
+\citep{patel2025learning}---shifts the optimum toward positive alignment but
+leaves the feasible set unrestricted: for any finite $\rho$, a sufficiently
+large forget-loss reduction still makes a step with $\langle g,\gr\rangle<0$
+preferable.
+Only \ours{} guarantees $\langle u_t,\gr\rangle \ge 0$ unconditionally, because
+only a projection makes such steps unreachable rather than merely costly.
+\end{theorem}
+
+% ============================================================
+\section{Experiments}\label{sec:experiments}
+
+\subsection{Setup}\label{sec:setup}
+
+We forget one class at a time on six benchmarks that vary class count, examples
+per class and domain: CIFAR-10 and CIFAR-100 \citep{krizhevsky2009cifar}, MNIST
+\citep{lecun1998mnist}, SVHN \citep{netzer2011svhn}, STL-10
+\citep{coates2011stl10} and PathMNIST \citep{yang2023medmnist}. We forget every
+class of MNIST and PathMNIST, one class per tens group of CIFAR-100, and class~0
+of CIFAR-10, SVHN and STL-10 over three seeds: 31 tasks and 75 runs. All models
+are ResNet-18 \citep{he2016resnet}. Retrain, SalUn, SCRUB, Bad Teacher and
+NegGrad+ are re-run on our stack with one MIA implementation. Hyperparameters are
+fixed per dataset and released as configuration files
+(Appendix~\ref{app:hyper}); Appendix~\ref{app:experiments} gives the full
+protocol.
+
+\subsection{Main Results}\label{sec:main_results}
+
+\begin{table}[t]
+\centering
+\caption{\textbf{Cross-dataset results.} Mean $\pm$ std over classes $\times$
+seeds (3 seeds for the 10-class datasets; single seed per class for CIFAR-100).
+\#T = number of forgetting tasks. Chance $=100/K\%$ is the level a fully
+unlearned model must reach. The upper block holds the epoch budget fixed across
+datasets, which is the right control for a cross-dataset comparison but
+penalises datasets with few images per class, since the binding resource is
+optimiser steps rather than epochs. The lower block re-runs the two datasets
+that fall short at four times that budget, on the same seeds and classes;
+$^*$marks the shared-budget STL-10 row it supersedes
+(\S\ref{sec:crossdataset_stl}).}
+\label{tab:cross}
+\begin{tabular}{@{}lccccccc@{}}
+\toprule
+\textbf{Dataset} & \textbf{\#T} & \textbf{Chance} & \textbf{TA} & \textbf{FA}$\downarrow$ & \textbf{RA} & \textbf{MIA} \\
+\midrule
+CIFAR-10    & 1 & 10.0\% & $86.13 \pm 0.02$ & $\mathbf{1.87} \pm 0.25$ & $100.00 \pm 0.00$ & $0.529 \pm 0.001$ \\
+MNIST       & 10 & 10.0\% & $90.00 \pm 0.64$ & $\mathbf{6.17} \pm 2.81$ & $99.49 \pm 0.04$ & $0.497 \pm 0.009$ \\
+SVHN        & 1 & 10.0\% & $89.69 \pm 0.02$ & $\mathbf{5.75} \pm 0.17$ & $97.26 \pm 0.01$ & $0.525 \pm 0.001$ \\
+STL-10$^*$  & 1 & 10.0\% & $92.84 \pm 0.02$ & $75.67 \pm 1.70$ & $99.38 \pm 0.10$ & $0.466 \pm 0.005$ \\
+PathMNIST   & 9 & 11.1\% & $80.96 \pm 5.39$ & $\mathbf{5.82} \pm 3.42$ & $98.88 \pm 0.31$ & $0.483 \pm 0.084$ \\
+CIFAR-100   & 9 & \phantom{0}1.0\% & $76.17 \pm 0.86$ & $4.07 \pm 5.51$ & $92.19 \pm 0.84$ & $0.500 \pm 0.037$ \\
+\midrule
+\multicolumn{7}{@{}l}{\emph{Extended budget} (60 epochs; same seeds, classes and tolerances)} \\
+STL-10      & 1 & 10.0\% & $85.15 \pm 0.05$ & $\mathbf{1.73} \pm 0.77$ & $98.87 \pm 0.04$ & $0.491 \pm 0.007$ \\
+CIFAR-100   & 9 & \phantom{0}1.0\% & $75.50 \pm 0.64$ & $\mathbf{1.27} \pm 0.37$ & $91.32 \pm 0.88$ & $0.494 \pm 0.038$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{\textbf{CIFAR-10 class-0 forgetting.} \ours{} is a 3-seed mean $\pm$
+std. Methods with FA~$>80\%$ attain MIA~$\approx 0.5$ trivially, by barely
+changing the model. $\dagger$Our reproduction; $\ddagger$our reproduction with
+unified MIA. $^\S$A-GEM projection applied to plain gradient ascent, with
+\ours{}'s KD anchor and retain-confusion target removed: the direct
+projected-gradient baseline, isolating what the projection alone achieves.}
+\label{tab:cifar10}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Method} & \textbf{TA} & \textbf{FA}$\downarrow$ & \textbf{RA} & \textbf{MIA} \\
+\midrule
+Retrain (gold standard) & 92.5 & 0.0 & 100.0 & 0.500 \\
+\midrule
+SalUn$^\dagger$        & 84.0 & 0.0  & 97.1 & 0.497 \\
+Bad Teacher$^\ddagger$ & 82.0 & 29.7 & 90.2 & 0.499 \\
+SCRUB$^\ddagger$       & 93.3 & 88.8 & 97.7 & 0.515 \\
+NegGrad+$^\ddagger$    & 94.2 & 84.8 & 99.3 & 0.525 \\
+\midrule
+Projection-only$^\S$   & 86.23 & 18.66 & 99.90 & 0.511 \\
+\midrule
+\textbf{\ours{}} & $\mathbf{86.13}\pm.02$ & $\mathbf{1.87}\pm.25$ & $\mathbf{100.00}\pm.00$ & $\mathbf{0.529}\pm.001$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At a shared epoch budget \ours{} drives FA to or below the chance level on four
+of six datasets with RA $\ge 97.2\%$ (CIFAR-100: $92.2\%$), and each of the ten
+MNIST and nine PathMNIST classes lands below chance individually
+(Table~\ref{tab:cross}, Appendix~\ref{app:perclass}). The two shortfalls are
+budget-limited: STL-10 gets ${\sim}60$ optimiser steps at the shared budget
+against ${\sim}600$ for CIFAR-10, and at 60 epochs STL-10 reaches $1.73\%$ and
+CIFAR-100 $1.27\%$, so all six datasets reach chance. On CIFAR-10
+(Table~\ref{tab:cifar10}, Figure~\ref{fig:advantage}), \ours{} is the only method that both forgets to chance
+and leaves retain accuracy untouched: SalUn forgets fully but costs $2.9$pp of
+retain accuracy, Bad Teacher stops at $29.7\%$ while damaging the model, and
+SCRUB and NegGrad+ keep the model intact by barely forgetting. The projection
+alone does not unlearn: applied to plain gradient ascent it preserves the retain
+set but stalls at $18.66\%$, so the projection supplies retain safety and the
+\klr{} objective supplies the forgetting.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{fig_advantage.png}
+\caption{\textbf{What \ours{} achieves, and what it guarantees.}
+\textbf{(a)}~Measured outcomes on CIFAR-10 class~0
+(Table~\ref{tab:cifar10}): forgetting requires forget accuracy at or below the
+$10\%$ chance level, and utility requires retain accuracy to stay high. SCRUB
+and NegGrad+ keep the retained model intact by barely forgetting; Bad Teacher
+forgets more but damages the model; \ours{} is the only method reaching the
+target region with retain accuracy fully preserved. \textbf{(b)}~The structural
+difference, which no accuracy table can show. Against the retain constraint
+$\gr$, a soft penalty leaves retain-harming steps (red) inside the feasible
+set---it makes them costly, not impossible---whereas projecting onto
+$\{u : \langle u,\gr\rangle \ge 0\}$ removes that half-space entirely
+(Theorem~\ref{thm:separation}(iv)).}
+\label{fig:advantage}
+\end{figure}
+
+\subsection{Momentum Is Not Incidental}\label{sec:momentum_ablation}
+
+\begin{table}[t]
+\centering
+\caption{\textbf{Momentum ablation.} Removing momentum to simplify the analysis
+breaks forgetting on five of six datasets. High RA with high FA indicates the
+model barely changed. Same configs, seeds, and stopping rules throughout.}
+\label{tab:momentum}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+& & \multicolumn{2}{c}{$\mu=0$ (analysis-friendly)} & \multicolumn{2}{c}{Projected momentum (ours)} \\
+\cmidrule(lr){3-4}\cmidrule(lr){5-6}
+\textbf{Dataset} & \textbf{Chance} & \textbf{FA}$\downarrow$ & \textbf{RA} & \textbf{FA}$\downarrow$ & \textbf{RA} \\
+\midrule
+CIFAR-10  & 10.0\% & \phantom{0}5.8 & 100.0 & \phantom{0}1.9 & 100.0 \\
+MNIST     & 10.0\% & 95.9 & \phantom{0}99.5 & \phantom{0}6.2 & 99.5 \\
+SVHN      & 10.0\% & 61.9 & \phantom{0}97.4 & \phantom{0}5.8 & 97.3 \\
+STL-10    & 10.0\% & 99.7 & \phantom{0}99.4 & 75.7 & 99.4 \\
+PathMNIST & 11.1\% & 16.4 & \phantom{0}99.0 & \phantom{0}5.8 & 98.9 \\
+CIFAR-100 & \phantom{0}1.0\% & 73.7 & \phantom{0}94.1 & \phantom{0}4.1 & 92.2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Removing momentum is the most direct route to an exact guarantee, since the
+applied update then equals the projected gradient. Table~\ref{tab:momentum} shows
+the cost: with $\mu = 0$ and everything else fixed, \ours{} fails to forget on
+five of six datasets (FA $95.9\%$ on MNIST, $99.7\%$ on STL-10, $73.7\%$ on
+CIFAR-100), and RA stays high only because the model barely moves. A guarantee
+stated for the momentum-free update would be exact and would describe a method
+that does not unlearn. The dependence is not ours alone: every update rule we
+tested loses forgetting without momentum, but the KL objectives lose $70$--$79$pp
+against $12$--$15$pp for gradient ascent, because a bounded objective needs
+momentum's $1/(1-\mu)$ amplification (Appendix~\ref{app:momentum}).
+
+\subsection{BatchNorm: the Attack, and a Fix That Keeps BatchNorm}\label{sec:bn_results}
+
+\begin{table}[t]
+\centering
+\caption{\textbf{BatchNorm recalibration} (CIFAR-10, class~0), using
+\texttt{update\_bn} on the retain set: BatchNorm buffers are reset and
+recomputed, no weight is touched. Every baseline and the un-unlearned base model
+are unaffected ($\Delta F \le 0$); \ours{} with a BatchNorm backbone loses
+essentially all of its forgetting. The two backbones without running statistics
+are outside the operator's reach by construction. NegGrad+ is omitted: no
+checkpoint for it was available.}
+\label{tab:bnrecal}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Configuration & pre-$F$ & post-$F$ & $\boldsymbol{\Delta F}$ & pre-TA & post-TA \\
+\midrule
+Base model (no unlearning)  & $100.0$ & $99.8$ & $-0.2$ & $95.5$ & $92.9$ \\
+SalUn                       & $0.0$   & $0.0$  & $+0.0$ & $84.7$ & $84.4$ \\
+Bad Teacher                 & $28.7$  & $28.4$ & $-0.3$ & $81.5$ & $84.0$ \\
+SCRUB                       & $89.3$  & $85.7$ & $-3.6$ & $93.5$ & $93.2$ \\
+\midrule
+\ours{} (BatchNorm, frozen) & $1.4$   & $99.7$ & $\mathbf{+98.4}$ & $86.1$ & $92.9$ \\
+\ours{} (GroupNorm)         & $4.9$   & $4.9$  & $\mathbf{0.0}$   & $84.2$ & $84.2$ \\
+\ours{} (ViT-B/16, LayerNorm) & $9.6$ & $9.6$  & $\mathbf{0.0}$   & $87.0$ & $87.0$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering\color{revised}
+\caption{\added{\textbf{BN-robust \ours{} under BatchNorm recalibration} (CIFAR-10,
+class~0, seeds $\{42,123,456\}$; \texttt{update\_bn} on the retain set, as in
+Table~\ref{tab:bnrecal}). Every row shares the $93.97\%$ base except GroupNorm,
+which needs its own. The un-unlearned base is the control: recalibrating it
+changes nothing. \emph{Naive} stopping reads FA under the in-loop statistics,
+\emph{calibrated} stopping under the statistics that ship. Time is wall-clock per
+run on one GPU.}}
+\label{tab:bnrobust}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lcccccccc@{}}
+\toprule
+Configuration & base TA & pre-$F$ & post-$F$ & $\boldsymbol{\Delta F}$ & TA & RA & epochs & min \\
+\midrule
+Base model (no unlearning)     & $93.97$ & $99.80$ & $99.82$ & $+0.0$ & $93.97$ & ---     & ---          & ---    \\
+\ours{} (BatchNorm, frozen)    & $93.97$ & $8.51 \pm 0.30$  & $99.12 \pm 0.09$ & $\mathbf{+90.6}$ & $85.20$ & $97.34$ & $2$          & $1.9$  \\
+\ours{} (GroupNorm)            & $91.89$ & $5.91 \pm 0.09$  & n/a              & n/a              & $83.13$ & $98.92$ & $3$          & $2.5$  \\
+BN-robust, naive stopping      & $93.97$ & $11.43 \pm 1.90$ & $11.44 \pm 1.87$ & $\mathbf{0.0}$   & $84.42$ & $95.46$ & $11$--$13$   & $9.8$  \\
+BN-robust, calibrated stopping & $93.97$ & $9.19 \pm 0.08$  & $9.18 \pm 0.07$  & $\mathbf{0.0}$   & $84.30$ & $95.59$ & $13$         & $13.3$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{The attack.}
+\texttt{update\_bn} resets every BatchNorm buffer and recomputes the statistics
+on the retain set without touching a weight; we verify that every learnable
+parameter is bit-identical afterwards. Table~\ref{tab:bnrecal} shows that
+recalibration leaves the un-unlearned base model and every baseline we
+reproduced unaffected, but undoes \ours{} with frozen statistics completely:
+forget accuracy returns from $1.4\%$ to $99.7\%$ and test accuracy to $92.9\%$,
+the original model. Because the statistics are frozen, the weights learn to
+forget against statistics an attacker can replace. GroupNorm and a ViT's
+LayerNorm keep no running statistics and are outside the attack's reach by
+construction (Tables~\ref{tab:gn} and~\ref{tab:vit}), but that is a change of
+architecture, not robustness.
+
+\paragraph{BN-robust \ours{}.}\label{sec:bn_robust}
+\added{We keep BatchNorm and stop the statistics going stale. Before every step
+they are recomputed on 512 retain images with the attacker's own operator, after
+the last step on the whole retain set, and the stopping rule reads forget
+accuracy under the statistics that will ship, falling back to the best epoch if
+the target is not met (Figure~\ref{fig:bnrobust_mech}). The update rule, and so
+Theorem~\ref{thm:retain_safety}, is unchanged. Table~\ref{tab:bnrobust} gives the
+result on a separate base model (the checkpoints behind Table~\ref{tab:bnrecal}
+were no longer available): with frozen statistics the attack returns forget
+accuracy to $99.1\%$, while BN-robust \ours{} forgets to $9.2\%$ and stays at
+$9.2\%$. It holds on all ten CIFAR-10 classes ($6.7$--$10.2\%$ after the attack,
+all within three standard errors of chance), on MNIST ($3.9\%$, where frozen
+statistics recover to $99.97\%$), and when the attacker recalibrates on the full
+training set or the test set instead (Figure~\ref{fig:bnrobust_attack},
+Appendix~\ref{app:bn_robust}). It costs
+about seven times the compute and $1.8$pp of retain accuracy, mostly because
+forgetting that must happen in the weights takes ${\sim}13$ epochs
+instead of~$2$.}
+
+\begin{figure}[t]
+\centering\color{revised}
+\includegraphics[width=\textwidth]{fig_bnrobust_mechanism.png}
+\caption{\added{\textbf{What BN-robust \ours{} changes.} $R$ resets the BatchNorm
+statistics and recomputes them on retain data without touching a weight. With
+frozen statistics the forgetting lives in the mismatch between $\theta_T$ and
+$\phi_0$, and the attack removes it; BN-robust ships statistics consistent with
+its weights, so the attack has nothing to recover. Forget accuracies are
+CIFAR-10 class~0, means over three seeds (Table~\ref{tab:bnrobust}).}}
+\label{fig:bnrobust_mech}
+\end{figure}
+
+\begin{figure}[t]
+\centering\color{revised}
+\includegraphics[width=\textwidth]{fig_bnrobust_attack.png}
+\caption{\added{\textbf{BN-robust survives the recalibration attack.} (a)~Forget
+accuracy before (open) and after (filled) \texttt{update\_bn} on the retain set,
+class~0, means over three seeds; on MNIST the frozen configuration's forgetting
+is undone completely. (b)~Forget accuracy after the attack when the attacker
+recalibrates on the retain set, the full training set (forget class included),
+or the test set (CIFAR-10 class~0, three seeds; BN-robust with naive stopping).}}
+\label{fig:bnrobust_attack}
+\end{figure}
+
+\subsection{Ablation and Further Analyses}\label{sec:further}
+
+\paragraph{Ablation.}
+At equal compute with stopping disabled, removing the projection collapses the
+model (TA $44.4\%$ and RA $52.6\%$, against $85.7\%$ and $99.98\%$ with it),
+while removing the distillation anchor changes RA by $0.04$pp
+(Table~\ref{tab:ablation}). With stopping enabled every variant halts after one
+epoch and the projection looks costless, which is why we report both.
+
+\paragraph{Further analyses.}
+The appendices report the remaining experiments in full. \emph{Step-level
+audit:} the projection fires at all 120 logged steps, $\langle u_t,\gr\rangle \ge
+0$ holds at every step to float32 precision, and $\|u_t\|$ peaks at $9.16$
+against the bound of $10$ (Figure~\ref{fig:guarantee}). \emph{Transformer:} on
+ViT-B/16 forgetting transfers, with FA $9.71\%$ and RA $97.55\%$
+(Appendix~\ref{sec:vit}). \emph{Constraint strength:} interpolating from no
+correction to the full projection raises RA monotonically from $52.5\%$ to
+$99.98\%$, and only the endpoint excludes retain-harming steps
+(Appendix~\ref{sec:strength}). \emph{Tolerances:} the retain budget is
+non-binding, and the forget target is a usable knob over a $29$pp range once it is
+checked at every step (Appendix~\ref{sec:sweeps}). \emph{Distance to a retrained
+model:} \ours{} is closest in feature space (Fr\'echet distance $13$ against
+$153$--$495$ for the baselines) and SalUn in output space
+(Appendix~\ref{sec:distance}). \emph{Membership inference:} a retrained reference
+scores $0.69$ on CIFAR-10, not $0.5$, and between $0.31$ and $0.70$ across
+PathMNIST classes, so $0.5$ is the wrong target and calibrating against the
+reference reverses the ranking of methods (Appendix~\ref{sec:mia}).
+\emph{Stopping point:} divergence to a retrained model is U-shaped along the
+trajectory with its minimum above chance, and MIA passes through $0.5$ rather
+than converging to it (Appendices~\ref{sec:overforget}
+and~\ref{sec:trajectory}).
+
+% ============================================================
+\section{Limitations}\label{sec:limitations}
+
+The compute a dataset needs cannot be predicted in advance: the binding resource
+is optimiser steps, and STL-10 and CIFAR-100 needed 60 epochs rather than 15 and
+20. Sample-level forgetting works only crudely, because the retain-confusion
+target degenerates to uniform when every class remains in the retain set. The
+guarantee bounds the sampled mini-batch retain objective, not the population
+loss, and holds to float32 precision. Our separation from soft
+conflict-resolution methods \citep{patel2025learning} is structural; we have not
+run that method on our stack. \added{BN-robust \ours{} costs about seven times
+the compute, was evaluated on two datasets, and defends only the normalisation
+statistics, not weight-level attacks such as fine-tuning recovery.} Sequential
+unlearning degrades test accuracy cumulatively ($86.1 \to 69.1$ over three
+classes), and \ours{} gives no differential-privacy guarantee.
+Appendix~\ref{app:limitations} discusses each point.
+
+% ============================================================
+\section{Conclusion}\label{sec:conclusion}
+
+Unlearning is the dual of continual learning, and the dual of continual
+learning's strongest tool is a hard constraint on the update. For that
+constraint to mean anything it must be stated for the update the optimiser
+applies: projecting the post-momentum update makes
+Theorem~\ref{thm:retain_safety} exact for the deployed optimiser, while the
+analysis-friendly alternative stops forgetting on five of six datasets. Across
+six datasets and 31 forgetting tasks \ours{} reaches the chance level on all six
+(two at a longer budget) with retain accuracy at or above $97.2\%$ on the
+10-class datasets, and its step-level logs confirm the constraint at every step.
+\added{On BatchNorm backbones, keeping the normalisation statistics consistent
+with the weights throughout unlearning makes that forgetting survive
+recalibration, on every CIFAR-10 class and on MNIST.} The duality is also a
+design space: any continual-learning technique that protects old-task
+knowledge has an unlearning counterpart that protects retained knowledge during
+erasure. More broadly, when an
+optimiser detail is chosen for analytical convenience, it should be checked
+against the behaviour it was meant to explain.
+
+\FloatBarrier
+% tmlr.bst when available; plainnat keeps the document compilable without it.
+\IfFileExists{tmlr.bst}{\bibliographystyle{tmlr}}{\bibliographystyle{plainnat}}
+\bibliography{../references}
+
+% ============================================================
+\appendix
+% ============================================================
+\section{Related Work and Positioning in Full}\label{app:related}\label{sec:related_intro}
+
+Approximate unlearning methods occupy different points on the privacy--utility
+frontier, and the retain side is where they differ most. \textbf{Gradient
+ascent} \citep{thudi2022unrolling} maximises forget-set loss with no mechanism
+protecting retain accuracy, collapsing test accuracy to ${\sim}38\%$ on
+CIFAR-10. \textbf{SalUn} \citep{fan2024salun} confines random-label updates to a
+saliency mask---effective in practice, but with no formal retain guarantee and
+no control over how much is forgotten. \textbf{SCRUB}
+\citep{kurmanji2023unbounded} alternates forget and retain steps balanced by a
+weight $\lambda$, so the balance is tuned rather than enforced; in our
+reproduction it preserves retain accuracy ($97.7\%$) by barely forgetting at all
+(forget accuracy $88.8\%$, Table~\ref{tab:cifar10}). \textbf{NegGrad+}
+\citep{thudi2022unrolling} adds a retain-loss term as a weighted sum, again
+without a guarantee that retain loss is controlled. Closest to us,
+\citet{patel2025learning} diagnose the same forget--retain gradient conflict but
+resolve it with a soft regulariser that rewards positive alignment. A fuller treatment, including exact unlearning and distillation-based methods, follows the table.
+
+The distinction we draw is structural rather than numerical, so
+Table~\ref{tab:properties} compares properties of each method's \emph{definition}
+---checkable against the published update rule, without relying on our
+reimplementation of it. A soft penalty biases the optimiser toward retain-safe
+steps but leaves harmful steps feasible: for any finite penalty weight, a
+sufficiently large forget-loss reduction still makes a retain-harming step
+preferable. A projection removes those steps from the feasible set altogether
+(Theorem~\ref{thm:separation}(iv)). The final row is the one we would emphasise,
+and the one \S\ref{sec:momentum_ablation} makes concrete: a guarantee proved for
+a momentum-free surrogate says nothing about a run that uses momentum.
+
+Figure~\ref{fig:advantage} places the method against the alternatives on both
+what it achieves and what it guarantees.
+
+\paragraph{Exact unlearning.}
+SISA \citep{bourtoule2021sisa} partitions data into shards so that removal
+requires retraining only the affected shard; the per-deletion cost approaches
+full retraining as shard count grows. Certified removal
+\citep{guo2020certified} gives exact guarantees for convex models but does not
+extend to deep networks.
+
+\paragraph{Gradient-based approximate unlearning.}
+GA \citep{thudi2022unrolling} maximises forget-set loss, with no mechanism to
+prevent the same direction from degrading retain performance. Amnesiac
+unlearning \citep{graves2021amnesiac} subtracts cached per-sample updates,
+requiring $O(T|\Df|)$ storage. NegGrad+ optimises
+$-\lossf + \lambda\lossr$ directly, which is the Lagrangian relaxation of
+Eq.~\ref{eq:problem} rather than a solution to it: the retain term shifts the
+optimum without bounding any single step, so the weighted sum is exactly the
+soft treatment Theorem~\ref{thm:separation}(iv) separates us from.
+
+\paragraph{Saliency and Fisher methods.}
+SalUn \citep{fan2024salun} applies random-label updates inside a top-50\%
+saliency mask: strong empirically (FA~$=0\%$ on CIFAR-10) but with no formal
+retain guarantee and no control over the degree of forgetting. Fisher-based
+methods \citep{golatkar2020eternal,golatkar2021scrubbing} and SSD
+\citep{foster2024ssd} weight parameters by estimated importance, requiring
+Hessian approximations that scale poorly.
+
+\paragraph{Knowledge distillation.}
+Bad Teacher \citep{chundawat2023badteacher} uses competent/incompetent teachers.
+SCRUB \citep{kurmanji2023unbounded} is closest in motivation---both draw on CL
+intuitions and use KD to anchor retain behaviour---but differs algorithmically:
+SCRUB alternates forget and retain steps balanced by $\lambda$, so its balance is
+hyperparameter-dependent, whereas \ours{}'s retain safety holds by construction
+(Theorem~\ref{thm:separation}); and SCRUB ascends the forget loss, which is
+unstable in either direction, whereas \klr{} converges to a specific target
+distribution.
+
+\paragraph{Continual learning connection, and the closest prior work.}
+A-GEM \citep{chaudhry2019agem} projects task gradients to avoid catastrophic
+forgetting. The CL--MU duality has been noted conceptually
+\citep{nguyen2020variational,kurmanji2023unbounded}. Closest to \ours{}, recent
+work \citep{patel2025learning} also targets the forget--retain gradient
+conflict, but through an \emph{implicit, soft} regulariser encouraging a positive
+inner product---with no per-step constraint and no formal guarantee. More
+broadly, gradient projection and conflict resolution are now actively explored
+for unlearning. \added{Closest in mechanism is Projected-Gradient Unlearning
+\citep{hoang2024learn}, which takes unlearning steps orthogonal to a gradient
+subspace estimated for the retained data. \ours{} differs in the constraint and in
+what it binds: a half-space against the current retain gradient---the minimum
+correction that excludes retain-harming steps---applied to the post-momentum
+update the optimiser actually takes.} \ours{} enforces $\langle u_t,\gr\rangle \ge 0$ explicitly at every
+step, on the post-momentum update, which is the difference between \emph{softly
+discouraging} conflict and \emph{provably eliminating} it---and, relative to
+guarantees stated for momentum-free surrogates, the difference between a bound
+that describes the deployed optimiser and one that does not.
+\S\ref{sec:strength} tests the mechanism this distinction rests on by varying
+our own projection between a soft penalty and the hard constraint; a
+like-for-like run of that method on our stack remains future work.
+
+% ============================================================
+\section{Design Details}\label{app:method}
+
+\subsection{From the Optimisation Problem to the Algorithm}
 
 This framing makes three things explicit that weighted multi-objective
 approaches conflate. First, retain safety is a \emph{hard constraint}, not a
@@ -483,75 +969,9 @@ $\|u_t\| \le c/(1-\mu)$ per step \\
 \end{tabular}
 \end{table}
 
-% ============================================================
-\section{The \ours{} Algorithm}\label{sec:method}
+\subsection{What Is Taken from A-GEM, and What Is Not}
 
-\ours{} realises each constraint in Eq.~\ref{eq:problem} through a specific
-mechanism: projection enforces the retain constraint
-(\S\ref{sec:projection}--\ref{sec:optimiser}); the \klr{} objective targets the
-forget constraint (\S\ref{sec:forget_obj}); dual stopping enforces the budgets
-(\S\ref{sec:stopping}). Algorithm~\ref{alg:purge} gives the pseudocode.
-
-\begin{algorithm}[t]
-\caption{\ours{} unlearning (projected-momentum update)}\label{alg:purge}
-\begin{algorithmic}[1]
-\REQUIRE Trained model $\theta$, forget set $\Df$, retain set $\Dr$;
-         lr $\eta$, momentum $\mu$, clip $c$, weight decay $\lambda_{\mathrm{wd}}$
-\ENSURE Unlearned model $\theta^*$
-\STATE $\theta_{\text{orig}} \leftarrow \text{freeze}(\text{copy}(\theta))$;\quad
-       set all BatchNorm layers to \texttt{eval} mode
-\STATE $p_r \leftarrow \frac{1}{|\Dr|}\sum_{x \in \Dr}\sigma(\theta_{\text{orig}}(x))$
-\STATE $L_0 \leftarrow \CE(\theta,\Dr)$;\quad $\text{budget} \leftarrow \alpha L_0$;\quad
-       $v \leftarrow 0$
-\FOR{epoch $=1$ to $T$}
-  \FOR{$(x_f,y_f)$ in $\Df$}
-    \STATE Sample $(x_r,y_r)$ from $\Dr$
-    \STATE $\gr \leftarrow \nabla_\theta[\CE(f_\theta(x_r),y_r) + \beta\losskd]$
-    \STATE $\gf \leftarrow \nabla_\theta\lossf(\theta;x_f)$
-    \STATE $d \leftarrow \mathrm{clip}_c\!\big(\gf + \lambda_{\mathrm{wd}}\theta\big)$
-           \hfill\textit{// clip BEFORE accumulation}
-    \STATE $v \leftarrow \mu v + d$
-           \hfill\textit{// momentum}
-    \IF{$\langle v, \gr\rangle < 0$}
-      \STATE $u \leftarrow v - \frac{\langle v,\gr\rangle}{\|\gr\|^2}\gr$;\quad
-             $u \leftarrow u\,\|v\|/\|u\|$
-             \hfill\textit{// project the update, rescale}
-    \ELSE
-      \STATE $u \leftarrow v$
-    \ENDIF
-    \STATE $\theta \leftarrow \theta - \eta u$
-  \ENDFOR
-  \IF{$\mathrm{FA}(\theta,\Df) \le \epsilon_F$ \textbf{or} $\CE(\theta,\Dr) > \text{budget}$}
-    \STATE \textbf{break}
-  \ENDIF
-\ENDFOR
-\RETURN $\theta^* \leftarrow \theta$
-\end{algorithmic}
-\end{algorithm}
-
-
-\subsection{Gradient Projection for Retain Safety}\label{sec:projection}
-
-At each step we compute the retain gradient on a retain mini-batch
-$\mathcal{B}_r \subset \Dr$ and the forget gradient on a forget mini-batch
-$\mathcal{B}_f \subset \Df$, both with respect to the model parameters
-$\theta$:
-\begin{equation}\label{eq:grads}
-\gr = \nabla_\theta \Big[
-  \tfrac{1}{|\mathcal{B}_r|}\!\!\sum_{(x,y)\in\mathcal{B}_r}\!\!
-  \CE(f_\theta(x), y) \;+\; \beta\,\losskd(\theta;\theta_0,\mathcal{B}_r)\Big],
-\qquad
-\gf = \nabla_\theta\, \lossf(\theta;\mathcal{B}_f).
-\end{equation}
-When a candidate update $v$ satisfies $\langle v, \gr\rangle < 0$---that is,
-moving along $v$ would \emph{increase} retain loss to first order---we replace
-it by its Euclidean projection onto the retain-safe half-space:
-\begin{equation}\label{eq:projection}
-\Pi_{\gr}(v) = v - \frac{\langle v,\gr\rangle}{\|\gr\|^2}\,\gr,
-\qquad\text{yielding } \langle \Pi_{\gr}(v),\gr\rangle = 0 .
-\end{equation}
-
-\paragraph{What is taken from A-GEM, and what is not.} The operator in
+The operator in
 Eq.~\ref{eq:projection} is A-GEM's, and we claim no novelty for it: the
 correction $v \mapsto v - \frac{\langle v,g\rangle}{\|g\|^2}g$ is the standard
 projection onto a half-space, and \citet{chaudhry2019agem} introduced its use in
@@ -585,23 +1005,7 @@ ablation reaches forget accuracy $18.66\%$ against a $10\%$ chance level
 rather than presenting the projection as a method.
 \end{enumerate}
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=\textwidth]{fig_projection_order.png}
-\caption{\textbf{Why the projection is applied to the update, not the
-gradient} (Proposition~\ref{prop:counter}). Both panels show step~1, whose
-constraint is $\gr$; the retain-safe half-space is shaded. \textbf{(a)}~Each
-ingredient is individually retain-safe---$d_1$ lies on the boundary, and
-$\mu v_0$ was certified against step~0's constraint---yet their sum, the vector
-actually applied, lies in the harming half-space with
-$\langle v_1,\gr\rangle = -\mu$. The violation grows with $\mu$.
-\textbf{(b)}~Projecting the accumulated update instead returns it to the
-boundary, so the certificate is issued against the constraint in force where
-the step is taken.}
-\label{fig:projorder}
-\end{figure}
-
-\subsection{Which Vector to Project: the Optimiser Matters}\label{sec:optimiser}
+\subsection{The Three Ordering Choices}
 
 \ours{} uses SGD with momentum $\mu$, weight decay $\lambda_{\mathrm{wd}}$, and
 gradient clipping $c$. Three ordering choices determine whether the guarantee is
@@ -636,13 +1040,9 @@ guarantee untouched while decoupling forgetting speed from conflict severity.
 (If $\Pi_{\gr}(v_t)=0$, i.e.\ $v_t$ is exactly antiparallel to $\gr$, we set
 $u_t=0$; the guarantee holds trivially.)
 
-\subsection{Forget Objective: Retain-Confusion Target}\label{sec:forget_obj}
+\subsection{The Forget Objective}
 
-Rather than targeting the uniform distribution $\mathcal{U}(K)$ (which no
-retrained model produces), the \klr{} objective minimises
-\begin{equation}\label{eq:kl_retain}
-\mathcal{L}_{\text{KL-R}} = \KL\!\left(\log\sigma(f_\theta(x_f)) \,\|\, p_r\right),
-\end{equation}
+The \klr{} objective of Eq.~\ref{eq:kl_retain} targets $p_r$,
 where $p_r$ (Eq.~\ref{eq:retain_confuse}) is the model's natural confusion
 pattern. The motivation is that no trained model produces uniform outputs, so a
 model driven toward $\mathcal{U}(K)$ remains separable from a retrained one even
@@ -674,89 +1074,408 @@ A frozen copy of $\theta_0$ serves as teacher,
 $\losskd = T^2\KL(\sigma(f_\theta(x_r)/T)\|\sigma(f_{\theta_0}(x_r)/T))$,
 anchoring behaviour on $\Dr$ and complementing the projection.
 
-\paragraph{BatchNorm vulnerability\added{, and two fixes}.}\label{sec:bn}
-\added{Class-homogeneous forget batches would corrupt BN running statistics, so
-\ours{} freezes them during unlearning. The weights then learn to forget relative
-to those frozen statistics, and the forgetting does not survive recomputing them
-on retained data (\S\ref{sec:bn_results}).} Replacing BN with GroupNorm removes
-the mechanism by construction (GroupNorm keeps no batch statistics to
-recalibrate), at a modest accuracy cost. \added{Alternatively, BN-robust \ours{}
-keeps BatchNorm and recomputes its statistics from retained data before every
-step, so the weights are always trained under the statistics an attacker would
-install (\S\ref{sec:bn_robust}).}
+\section{Notation, Assumptions, and the Analysed Update}\label{app:setup}
 
-\subsection{Dual Stopping}\label{sec:stopping}
+We restate the update exactly as implemented, since the entire point of
+Theorem~\ref{thm:retain_safety} is that the analysed object and the executed
+object coincide.
 
-Two criteria enforce the tolerance budgets of Eq.~\ref{eq:problem}: (1)~if
-retain loss exceeds $\alpha L_0$, unlearning halts; (2)~if FA drops below a
-target (default $100/K\%$), unlearning is declared complete. An intra-epoch FA
-check every 50 batches catches rapid drops mid-epoch---necessary because FA is
-piecewise-constant in $\theta$ and can plunge within a single epoch.
+\paragraph{Notation.}
+$\Lrt(\theta) = \lossr(\theta) + \beta\losskd(\theta,\theta_0;\Dr)$ is the
+composite retain objective evaluated on the sampled retain mini-batch at step
+$t$, and $\gr := \nabla_\theta\Lrt(\theta_t)$ its gradient. Note $\beta$ does not
+appear separately in the bounds because $\gr$ is already the composite gradient.
+$\gf := \nabla_\theta\lossf(\theta_t;x_f)$ is the forget gradient on the forget
+mini-batch. $\lambda_{\mathrm{wd}} \ge 0$ is weight decay, $c>0$ the clipping
+threshold, $\eta>0$ the learning rate, and $\mu\in[0,1)$ the momentum
+coefficient. $\|\cdot\|$ is the Euclidean norm on the concatenation of all
+trainable parameters.
 
-% ============================================================
-\section{Theoretical Guarantees}\label{sec:theory}
-
-\begin{theorem}[Exact per-step retain safety under momentum]\label{thm:retain_safety}
-Let the composite retain objective on the sampled retain mini-batch,
-$\Lrt = \lossr + \beta\losskd$, be $L$-smooth, and let
-$\gr = \nabla_\theta\Lrt(\theta_t)$. Let \ours{} run the update of
-Algorithm~\ref{alg:purge}: $\|d_t\| \le c$ by clipping,
-$v_t = \mu v_{t-1} + d_t$ with $v_{-1}=0$ and $\mu \in [0,1)$,
-$u_t = \Pi_{\gr}(v_t)\,\|v_t\|/\|\Pi_{\gr}(v_t)\|$ when
-$\langle v_t,\gr\rangle<0$ and $u_t = v_t$ otherwise, and
-$\theta_{t+1} = \theta_t - \eta u_t$. Then, exactly and unconditionally,
-\begin{equation}\label{eq:thm1}
-\langle u_t,\gr\rangle \ge 0,
-\qquad \|u_t\| \;=\; \|v_t\| \;\le\; \frac{c}{1-\mu},
-\qquad \Lrt(\theta_{t+1}) \;\le\; \Lrt(\theta_t) + \tfrac{1}{2}L\eta^2\Big(\frac{c}{1-\mu}\Big)^{\!2}.
+\paragraph{The projection operator.}
+For $g \ne 0$ define
+\begin{equation}\label{eq:app_proj}
+\Pi_{g}(v) \;=\;
+\begin{cases}
+v, & \langle v,g\rangle \ge 0,\\[2pt]
+v - \dfrac{\langle v,g\rangle}{\|g\|^{2}}\,g, & \langle v,g\rangle < 0,
+\end{cases}
+\qquad
+\widehat{\Pi}_{g}(v) \;=\;
+\begin{cases}
+\Pi_g(v)\,\dfrac{\|v\|}{\|\Pi_g(v)\|}, & \Pi_g(v) \ne 0,\\[4pt]
+0, & \Pi_g(v) = 0,
+\end{cases}
 \end{equation}
-\end{theorem}
+where $\widehat{\Pi}$ is the \emph{magnitude-preserving} variant used by \ours{}
+(\S\ref{sec:optimiser}). In the implementation the case $\Pi_g(v)=0$ is detected
+by the guard $\|\Pi_g(v)\| \le \epsilon\|v\|$ with $\epsilon = 10^{-8}$.
 
-\begin{proof}[Proof sketch]
-The first claim is immediate: if $\langle v_t,\gr\rangle \ge 0$ then $u_t=v_t$;
-otherwise $\langle \Pi_{\gr}(v_t),\gr\rangle = 0$ identically, and rescaling by
-a positive scalar preserves this. For the second, $\Pi_{\gr}$ is the orthogonal
-projection onto $\{u : \langle u,\gr\rangle = 0\}$, so the rescaling restores
-$\|u_t\|=\|v_t\|$; unrolling the buffer gives
-$v_t = \sum_{k=0}^{t}\mu^{t-k}d_k$, hence
-$\|v_t\| \le c\sum_{j=0}^{t}\mu^{j} < c/(1-\mu)$. The third follows from
-$L$-smoothness,
-$\Lrt(\theta_{t+1}) \le \Lrt(\theta_t) - \eta\langle u_t,\gr\rangle
-+ \tfrac{1}{2}L\eta^2\|u_t\|^2$, where the first-order term is non-positive by
-claim one and $\|u_t\|$ is bounded by claim two. The full proof, together with the three supporting lemmas, is given in Appendix~\ref{app:thm1} (Theorem~\ref{thm:app_main}).
+\paragraph{The analysed (and executed) update.}
+With $v_{-1}=0$, for $t = 0,1,2,\dots$
+\begin{align}
+d_t &= \mathrm{clip}_c\!\big(\gf^{(t)} + \lambda_{\mathrm{wd}}\theta_t\big),
+      &&\text{where } \mathrm{clip}_c(x) = x\cdot\min\!\big(1, c/\|x\|\big),
+      \label{eq:app_clip}\\
+v_t &= \mu\,v_{t-1} + d_t, \label{eq:app_mom}\\
+u_t &= \widehat{\Pi}_{\gr^{(t)}}(v_t), \label{eq:app_projstep}\\
+\theta_{t+1} &= \theta_t - \eta\,u_t. \label{eq:app_step}
+\end{align}
+Three orderings are load-bearing and are stated here so they cannot be lost in
+implementation: clipping acts on $d_t$ \emph{before} the momentum accumulation
+(\ref{eq:app_clip})--(\ref{eq:app_mom}); the projection acts on the accumulated
+$v_t$, i.e.\ on the update rather than on the gradient (\ref{eq:app_projstep});
+and no clipping is applied after (\ref{eq:app_projstep}).
+
+\paragraph{Assumptions.}
+\begin{itemize}
+\item[(A1)] $\Lrt$ is $L$-smooth: $\|\nabla\Lrt(x)-\nabla\Lrt(y)\| \le L\|x-y\|$
+for all $x,y$.
+\item[(A2)] Clipping is applied as in (\ref{eq:app_clip}), so $\|d_t\| \le c$ for
+all $t$.
+\item[(A3)] $\mu \in [0,1)$.
+\end{itemize}
+(A1) is the standard smoothness assumption of first-order analysis; for ReLU
+networks it holds piecewise, and we treat it as an idealisation, as is
+conventional. (A2) and (A3) are properties of the implementation, not
+assumptions about the data.
+
+% ------------------------------------------------------------
+\section{Proof of Theorem~\ref{thm:retain_safety}}\label{app:thm1}
+
+We prove three lemmas and then assemble the theorem.
+
+\begin{lemma}[Projection properties]\label{lem:proj}
+Let $g \ne 0$ and $v$ be arbitrary. Then
+\begin{enumerate}
+\item[(i)] $\langle \Pi_g(v), g\rangle \ge 0$, with equality whenever
+$\langle v,g\rangle < 0$;
+\item[(ii)] $\|\Pi_g(v)\| \le \|v\|$;
+\item[(iii)] $\langle \widehat{\Pi}_g(v), g\rangle \ge 0$ and
+$\|\widehat{\Pi}_g(v)\| \le \|v\|$, with $\|\widehat{\Pi}_g(v)\| = \|v\|$
+whenever $\Pi_g(v)\ne 0$.
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}
+(i) If $\langle v,g\rangle \ge 0$ then $\Pi_g(v)=v$ and the claim is immediate.
+If $\langle v,g\rangle<0$ then
+\[
+\langle \Pi_g(v), g\rangle
+= \Big\langle v - \tfrac{\langle v,g\rangle}{\|g\|^2}g,\; g\Big\rangle
+= \langle v,g\rangle - \tfrac{\langle v,g\rangle}{\|g\|^2}\|g\|^2 = 0 .
+\]
+(ii) In the first branch this is an equality. In the second branch, $\Pi_g$ is
+the orthogonal projection onto the hyperplane $\{u:\langle u,g\rangle=0\}$;
+writing $v = \Pi_g(v) + \tfrac{\langle v,g\rangle}{\|g\|^2}g$ as a sum of two
+orthogonal vectors, Pythagoras gives
+\begin{equation}\label{eq:app_pyth}
+\|v\|^2 = \|\Pi_g(v)\|^2 + \frac{\langle v,g\rangle^2}{\|g\|^2}
+\;\ge\; \|\Pi_g(v)\|^2 .
+\end{equation}
+(iii) If $\Pi_g(v)=0$ then $\widehat{\Pi}_g(v)=0$ and both claims are trivial.
+Otherwise $\widehat{\Pi}_g(v) = s\,\Pi_g(v)$ with
+$s = \|v\|/\|\Pi_g(v)\| > 0$, so
+$\langle \widehat{\Pi}_g(v),g\rangle = s\langle \Pi_g(v),g\rangle \ge 0$ by (i),
+and $\|\widehat{\Pi}_g(v)\| = s\|\Pi_g(v)\| = \|v\|$.
 \end{proof}
 
-Three points deserve emphasis. First, the first-order change in the sampled
-retain loss is non-positive; the only increase is the $O(\eta^2)$ smoothness
-term. Second, and unlike guarantees stated for momentum-free surrogates, this
-\emph{matches the implemented optimiser}: the analysed $u_t$ is the vector the
-code subtracts from the weights, with momentum enabled. Third, the bound is
-stated for the sampled mini-batch retain objective---the quantity \ours{}
-projects against---not the full-population retain loss; we return to this in
-\S\ref{sec:limitations}.
+Part (iii) is the formal content of the design choice in
+\S\ref{sec:optimiser}(iii): rescaling restores the magnitude that
+(\ref{eq:app_pyth}) removes, and because $s>0$ it cannot flip the sign of the
+inner product. The guarantee is therefore invariant to the rescaling, while the
+step magnitude is not.
 
-\begin{theorem}[Per-step separation]\label{thm:separation}
-For any model $\theta_0$ with retain gradient $\gr$:
-\textbf{(i)}~GA's update $+\eta\gf$ strictly increases retain loss to first
-order whenever $\langle\gf,\gr\rangle>0$;
-\textbf{(ii)}~SCRUB's $-\gf+\lambda\gr$ can have $\langle\cdot,\gr\rangle<0$ for
-any fixed $\lambda$;
-\textbf{(iii)}~SalUn's masked random-label gradient has unconstrained sign with
-respect to $\gr$;
-\textbf{(iv)}~a soft conflict regulariser that adds $\rho\,\phi(\langle
-g,\gr\rangle)$ with $\phi$ decreasing---the approach of the closest prior work
-\citep{patel2025learning}---shifts the optimum toward positive alignment but
-leaves the feasible set unrestricted: for any finite $\rho$, a sufficiently
-large forget-loss reduction still makes a step with $\langle g,\gr\rangle<0$
-preferable.
-Only \ours{} guarantees $\langle u_t,\gr\rangle \ge 0$ unconditionally, because
-only a projection makes such steps unreachable rather than merely costly.
+\begin{lemma}[Velocity norm bound]\label{lem:vel}
+Under (A2) and (A3), for every $t \ge 0$,
+\begin{equation}\label{eq:app_velbound}
+\|v_t\| \;\le\; c\,\frac{1-\mu^{\,t+1}}{1-\mu} \;<\; \frac{c}{1-\mu}.
+\end{equation}
+\end{lemma}
+
+\begin{proof}
+Unrolling (\ref{eq:app_mom}) from $v_{-1}=0$ gives
+$v_t = \sum_{k=0}^{t}\mu^{\,t-k} d_k$. By the triangle inequality and (A2),
+\[
+\|v_t\| \;\le\; \sum_{k=0}^{t}\mu^{\,t-k}\|d_k\|
+\;\le\; c\sum_{j=0}^{t}\mu^{\,j}
+\;=\; c\,\frac{1-\mu^{\,t+1}}{1-\mu}
+\;<\; \frac{c}{1-\mu},
+\]
+the last step using $\mu\in[0,1)$ so that $\mu^{t+1}>0$ and the geometric series
+converges.
+\end{proof}
+
+Lemma~\ref{lem:vel} is where the clip-before-momentum ordering is used: it
+requires $\|d_k\|\le c$ for the \emph{ingredients} of the sum. Note also that the
+bound is attained only in the limit of perfectly aligned successive steps; we
+observe $\max_t\|u_t\| = 9.16$ against $c/(1-\mu)=10$ in
+\S\ref{sec:alignment}, so it is tight in practice.
+
+\begin{lemma}[Descent step]\label{lem:descent}
+Under (A1), for any vector $u$ and $\theta_{+} = \theta_t - \eta u$,
+\begin{equation}\label{eq:app_descent}
+\Lrt(\theta_{+}) \;\le\; \Lrt(\theta_t) - \eta\langle u, \gr\rangle
++ \tfrac{1}{2}L\eta^2\|u\|^2 .
+\end{equation}
+\end{lemma}
+
+\begin{proof}
+Standard consequence of $L$-smoothness (the descent lemma): (A1) implies
+$\Lrt(y) \le \Lrt(x) + \langle \nabla\Lrt(x), y-x\rangle + \tfrac{L}{2}\|y-x\|^2$
+for all $x,y$. Substituting $x=\theta_t$, $y=\theta_+$, so that
+$y-x = -\eta u$ and $\nabla\Lrt(x)=\gr$, gives (\ref{eq:app_descent}).
+\end{proof}
+
+\begin{theorem}[Theorem~\ref{thm:retain_safety}, restated]\label{thm:app_main}
+Under (A1)--(A3), the update (\ref{eq:app_clip})--(\ref{eq:app_step}) satisfies,
+at every step $t$ and unconditionally,
+\begin{align}
+\text{(a)}\quad & \langle u_t, \gr^{(t)}\rangle \;\ge\; 0, \label{eq:app_a}\\
+\text{(b)}\quad & \|u_t\| \;\le\; \|v_t\| \;<\; \frac{c}{1-\mu},
+   \quad\text{with }\|u_t\|=\|v_t\|\text{ unless }\Pi_{\gr}(v_t)=0,
+   \label{eq:app_b}\\
+\text{(c)}\quad & \Lrt(\theta_{t+1}) \;\le\; \Lrt(\theta_t)
+   + \tfrac{1}{2}L\eta^{2}\Big(\frac{c}{1-\mu}\Big)^{\!2}. \label{eq:app_c}
+\end{align}
 \end{theorem}
 
-% ============================================================
-\section{Experiments}\label{sec:experiments}
+\begin{proof}
+(a) Immediate from Lemma~\ref{lem:proj}(iii) applied to $v_t$ with
+$g=\gr^{(t)}$, using (\ref{eq:app_projstep}). If $\gr^{(t)}=0$ the projection is
+undefined and is skipped; then $\langle u_t,\gr^{(t)}\rangle = 0$ and (a) holds
+trivially (see Remark~\ref{rem:degenerate}).
 
-\subsection{Setup}
+(b) Combine Lemma~\ref{lem:proj}(iii) with Lemma~\ref{lem:vel}.
+
+(c) By Lemma~\ref{lem:descent} with $u = u_t$,
+\[
+\Lrt(\theta_{t+1}) \le \Lrt(\theta_t) - \eta\underbrace{\langle u_t,\gr^{(t)}\rangle}_{\ge\,0\ \text{by (a)}}
++ \tfrac{1}{2}L\eta^2\underbrace{\|u_t\|^2}_{<\,(c/(1-\mu))^2\ \text{by (b)}}
+\;\le\; \Lrt(\theta_t) + \tfrac{1}{2}L\eta^2\Big(\frac{c}{1-\mu}\Big)^{\!2}. \qedhere
+\]
+\end{proof}
+
+The first-order change in the sampled retain objective is thus non-positive at
+every step; the only admissible increase is the $O(\eta^2)$ curvature term. The
+guarantee is \emph{unconditional} in the sense that it requires no assumption on
+$\gf$, on the alignment between forget and retain gradients, or on the data.
+
+\begin{corollary}[Momentum-free reduction]\label{cor:mu0}
+Setting $\mu=0$ gives $v_t = d_t$, $\|u_t\|\le c$, and
+$\Lrt(\theta_{t+1}) \le \Lrt(\theta_t) + \tfrac{1}{2}L\eta^2c^2$, recovering the
+momentum-free per-step bound.
+\end{corollary}
+
+\begin{corollary}[A-GEM reduction]\label{cor:agem}
+Setting $\mu=0$, $c=\infty$ and letting $\eta\to0$ recovers the first-order
+A-GEM guarantee $\langle u_t,\gr\rangle\ge0$ \citep{chaudhry2019agem}.
+\end{corollary}
+
+Corollary~\ref{cor:mu0} is worth reading alongside
+Table~\ref{tab:momentum}: the $\mu=0$ bound is \emph{formally tighter} (by a
+factor $(1-\mu)^{-2}=100$ at $\mu=0.9$), yet the configuration it describes
+fails to unlearn on five of six datasets. A tighter bound on a method that does
+not forget is not the better result---which is precisely why we analyse the
+update that is actually run.
+
+\subsection{Why the Projection Must Be Applied to the Update}\label{app:counterexample}
+
+The following proposition shows that the design choice of
+\S\ref{sec:optimiser}(i) is not a matter of convenience: projecting the
+\emph{gradient} provides no per-step guarantee once $\mu>0$, however carefully
+each individual gradient is projected.
+
+\begin{proposition}[Gradient-projection is insufficient under momentum]\label{prop:counter}
+Consider the variant that projects the gradient and then accumulates momentum:
+\[
+\tilde d_t = \mathrm{clip}_c\big(\Pi_{\gr^{(t)}}(\gf^{(t)})\big), \qquad
+v_t = \mu v_{t-1} + \tilde d_t, \qquad \theta_{t+1} = \theta_t - \eta v_t ,
+\]
+so that every accumulated ingredient satisfies
+$\langle \tilde d_t, \gr^{(t)}\rangle \ge 0$. Then for every $\mu \in (0,1)$
+there exist retain and forget gradients for which the applied update $v_t$
+satisfies $\langle v_t, \gr^{(t)}\rangle < 0$, i.e.\ the step strictly increases
+the sampled retain loss to first order.
+\end{proposition}
+
+\begin{proof}
+Work in $\mathbb{R}^2$ with $\lambda_{\mathrm{wd}}=0$, $c=\infty$ (clipping
+inactive), and $v_{-1}=0$.
+
+\emph{Step $0$.} Let $\gr^{(0)} = (1,0)$ and $\gf^{(0)} = (-1,1)$. Then
+$\langle \gf^{(0)},\gr^{(0)}\rangle = -1 < 0$, so the projection fires:
+\[
+\tilde d_0 = \Pi_{\gr^{(0)}}(\gf^{(0)})
+= (-1,1) - \frac{-1}{1}(1,0) = (0,1),
+\]
+which is retain-safe, $\langle \tilde d_0, \gr^{(0)}\rangle = 0$. Hence
+$v_0 = (0,1)$.
+
+\emph{Step $1$.} Let the retain mini-batch change so that
+$\gr^{(1)} = (0,-1)$, and let $\gf^{(1)} = (1,0)$. Then
+$\langle \gf^{(1)},\gr^{(1)}\rangle = 0 \ge 0$, so no projection is needed and
+$\tilde d_1 = (1,0)$, again retain-safe:
+$\langle \tilde d_1,\gr^{(1)}\rangle = 0$. The applied update is
+\[
+v_1 = \mu v_0 + \tilde d_1 = \mu(0,1) + (1,0) = (1,\mu),
+\qquad
+\langle v_1, \gr^{(1)}\rangle = \langle (1,\mu), (0,-1)\rangle = -\mu \;<\; 0
+\]
+for every $\mu>0$. By Lemma~\ref{lem:descent} the first-order change in $\Lrt$
+is $-\eta\langle v_1,\gr^{(1)}\rangle = +\eta\mu > 0$: the retain loss strictly
+increases to first order, even though \emph{every} projected gradient entering
+the buffer was individually retain-safe.
+\end{proof}
+
+The mechanism is transparent: the momentum buffer carries a direction that was
+certified against $\gr^{(0)}$ into a step whose constraint is $\gr^{(1)}$, and
+the projection at step $1$ never inspects the carried term. Projecting $v_t$
+itself (\ref{eq:app_projstep}) removes exactly this failure, because the
+certificate is issued against the constraint in force at the step where the
+update is applied. Note also that $\mu$ appears linearly in the violation, so the
+defect grows with the momentum coefficient rather than vanishing.
+
+\subsection{Why Clipping Must Precede Accumulation}\label{app:clip_order}
+
+\begin{proposition}[Clipping the update destroys momentum amplification]\label{prop:clip}
+Consider the variant that clips the final update,
+$u_t = \mathrm{clip}_c(\widehat{\Pi}_{\gr}(\mu v_{t-1} + \tilde g_t))$ with
+$\tilde g_t$ unclipped. Then $\|u_t\| \le c$ for all $t$, identical to the bound
+obtained at $\mu=0$ (Corollary~\ref{cor:mu0}), irrespective of $\mu$.
+\end{proposition}
+
+\begin{proof}
+Immediate from the definition of $\mathrm{clip}_c$.
+\end{proof}
+
+Proposition~\ref{prop:clip} is trivial as mathematics but decisive in practice.
+In our runs the raw forget-gradient norm is ${\sim}100\times$ the clipping
+threshold ($\|\gf\| \in [102,149]$ with $c=1$ on CIFAR-10), so clipping is active
+at every step and the cap is always attained. Clipping after accumulation
+therefore yields an applied step of magnitude exactly $\eta c$ --- the same
+magnitude as the momentum-free configuration, and hence the same failure to
+forget documented in Table~\ref{tab:momentum}. The ordering in
+(\ref{eq:app_clip})--(\ref{eq:app_mom}) instead admits
+$\|v_t\| \to c/(1-\mu)$, a $10\times$ larger step at $\mu=0.9$, while
+Lemma~\ref{lem:vel} keeps it bounded. The bound in (\ref{eq:app_c}) is looser by
+$(1-\mu)^{-2}$ as a result; this is the price of a guarantee that describes an
+optimiser that unlearns.
+
+\subsection{Remarks on Scope and Exactness}
+
+\begin{remark}[Mini-batch scope]\label{rem:minibatch}
+$\gr^{(t)}$ is the gradient of the retain objective on the \emph{sampled} retain
+mini-batch, so (\ref{eq:app_c}) is exact for that mini-batch's objective---which
+is the quantity \ours{} projects against, and therefore the quantity about which
+a per-step statement can be made. Because mini-batch gradients are unbiased
+estimates of the population gradient, the first-order term is non-positive in
+expectation up to the standard SGD gradient-variance term; a population-exact
+per-step guarantee would require the full retain gradient at every step, at
+$O(|\Dr|)$ cost per update. We regard this as the principal formal limitation
+(\S\ref{sec:limitations}).
+\end{remark}
+
+\begin{remark}[Degenerate retain gradient]\label{rem:degenerate}
+The implementation skips the projection when $\|\gr\|^2 < 10^{-12}$, since
+(\ref{eq:app_proj}) is then numerically ill-posed. In that regime the violation
+of (\ref{eq:app_a}) is bounded by Cauchy--Schwarz:
+$|\langle u_t,\gr\rangle| \le \|u_t\|\|\gr\| \le 10^{-6}c/(1-\mu)$, giving a
+first-order retain increase of at most $10^{-5}\eta$. Moreover such a $\gr$
+means the retain mini-batch is already at a stationary point. The exception is
+therefore quantitatively negligible, but we state it rather than suppress it.
+\end{remark}
+
+\begin{remark}[Floating-point exactness]\label{rem:float}
+In exact arithmetic $\langle \Pi_g(v),g\rangle = 0$ identically. In float32, the
+inner products are sums over $1.12\times10^7$ parameters, with accumulation
+error of order $\sqrt{n}\,\varepsilon_{32} \approx 4\times10^{-4}$ relative.
+The measured worst-case relative violation is $-7.4\times10^{-7}$
+(\S\ref{sec:alignment}), three orders of magnitude \emph{below} that scale and
+with positive mean, consistent with rounding rather than a systematic defect. We
+therefore state Theorem~\ref{thm:app_main} as holding to float32 precision, and
+recommend float64 accumulation for the inner products in
+(\ref{eq:app_proj}) in reference implementations.
+\end{remark}
+
+% ------------------------------------------------------------
+\section{Proof of Theorem~\ref{thm:separation}}\label{app:thm2}
+
+\begin{theorem}[Theorem~\ref{thm:separation}, restated]\label{thm:app_sep}
+Fix $\theta_0$ with retain gradient $\gr := \nabla\Lrt(\theta_0) \ne 0$ and
+forget gradient $\gf$. Consider one-step update operators. Then:
+\begin{enumerate}
+\item[(i)] \textbf{GA.} The update $\theta_0 + \eta\gf$ strictly increases
+$\Lrt$ to first order whenever $\langle \gf,\gr\rangle > 0$.
+\item[(ii)] \textbf{SCRUB.} For any fixed $\lambda>0$ there exist $\gf,\gr$ with
+$\langle -\gf+\lambda\gr,\;\gr\rangle < 0$.
+\item[(iii)] \textbf{SalUn.} The masked random-label update
+$-M\odot\nabla\CE_{\mathrm{RL}}$ has unconstrained sign with respect to $\gr$.
+\item[(iv)] \textbf{Soft conflict regularisers.} Penalising negative alignment
+does not preclude it.
+\item[(v)] \textbf{\ours{}.} $\langle u_t,\gr\rangle \ge 0$ unconditionally.
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+(i) A first-order expansion gives
+$\Lrt(\theta_0+\eta\gf) = \Lrt(\theta_0) + \eta\langle \gf,\gr\rangle + O(\eta^2)$,
+which exceeds $\Lrt(\theta_0)$ for small $\eta>0$ when
+$\langle\gf,\gr\rangle>0$. Since GA constrains neither the sign nor the
+magnitude of $\langle\gf,\gr\rangle$, no configuration-independent per-step
+guarantee is available.
+
+(ii) Compute
+$\langle -\gf+\lambda\gr,\;\gr\rangle = -\langle\gf,\gr\rangle+\lambda\|\gr\|^2$.
+This is negative precisely when
+$\langle\gf,\gr\rangle > \lambda\|\gr\|^2$. Such a pair exists for any fixed
+$\lambda$: e.g.\ in $\mathbb{R}^2$ take $\gr=(1,0)$ and
+$\gf = (\lambda+1)\,(1,0)$, giving
+$\langle\gf,\gr\rangle = \lambda+1 > \lambda = \lambda\|\gr\|^2$. Because
+$\lambda$ is a fixed hyperparameter while $\langle\gf,\gr\rangle/\|\gr\|^2$
+varies along the trajectory, no fixed $\lambda$ certifies every step.
+
+(iii) With random labels the masked gradient direction is uncorrelated with
+$\gr$ in expectation; individual draws therefore realise either sign of
+$\langle g_{\mathrm{SalUn}},\gr\rangle$, and the mask $M$ (selected by gradient
+magnitude, not by retain alignment) imposes no constraint on it.
+
+(iv) A regulariser adding $\rho\,\phi(\langle g,\gr\rangle)$ to the objective
+with $\phi$ decreasing shifts the optimum toward positive alignment but leaves
+the feasible set unrestricted: for any finite penalty weight $\rho$, a
+sufficiently large forget-loss reduction makes a step with
+$\langle g,\gr\rangle<0$ preferable. Only a hard constraint---i.e.\ a projection
+onto $\{u:\langle u,\gr\rangle\ge0\}$---renders such steps unreachable.
+
+(v) Theorem~\ref{thm:app_main}(a).
+\end{proof}
+
+\begin{remark}
+Theorem~\ref{thm:app_sep} is a \emph{worst-case} separation: it exhibits
+configurations in which the baselines strictly degrade the retain objective in a
+single step, not a claim that they typically do. In practice all these methods
+often produce small retain-loss changes. The distinction the theorem draws is
+between behaviour that is empirically usual and behaviour that is guaranteed by
+construction; only the latter is checkable without running the method.
+\end{remark}
+
+% ------------------------------------------------------------
+% ============================================================
+\section{Extended Experimental Results}\label{app:experiments}
+
+\subsection{Datasets, Baselines and Metrics}
+
+We also fix the four quantities used to evaluate unlearning throughout, so that
+they are available before the algorithm is stated. \emph{Test accuracy} (TA) is
+measured on the held-out test set and reports how much of the model's general
+utility survives. \emph{Forget accuracy} (FA) is measured on $\Df$; because a
+retrained model has never seen those samples, a fully unlearned model should
+drive FA down to at most the chance level $100/K\%$. \emph{Retain accuracy} (RA)
+is measured on $\Dr$ and should not move. Finally, a
+\emph{membership-inference attack} (MIA) tries to distinguish forget-set
+training samples from forget-set test samples, and we score it by the area under
+its receiver-operating-characteristic curve (AUROC); this is conventionally read
+against an ideal of $0.5$, a convention \S\ref{sec:mia} shows to be the wrong
+reference point.
 
 \paragraph{Datasets.}
 We evaluate on six image-classification benchmarks chosen to vary the three
@@ -806,7 +1525,7 @@ CIFAR-10: $\eta=5{\times}10^{-4}$, $\mu=0.9$, $\beta=2.0$, $c=1.0$,
 $\alpha=5.0$, $T_{\mathrm{KD}}=4.0$. Other datasets use
 $\eta=2{\times}10^{-4}$, $\beta\in[3,5]$. All configs are released as YAML.
 
-\subsection{Cross-Dataset Results}
+\subsection{Cross-Dataset Results in Detail}\label{app:cross}
 
 Table~\ref{tab:cross} reports the main results. At the shared epoch budget
 \ours{} drives FA to or below the chance level on four of six datasets and holds
@@ -878,64 +1597,6 @@ budget (\S\ref{sec:crossdataset_stl}).}
 \label{fig:crossdataset}
 \end{figure}
 
-\begin{table}[t]
-\centering
-\caption{\textbf{Cross-dataset results.} Mean $\pm$ std over classes $\times$
-seeds (3 seeds for the 10-class datasets; single seed per class for CIFAR-100).
-\#T = number of forgetting tasks. Chance $=100/K\%$ is the level a fully
-unlearned model must reach. The upper block holds the epoch budget fixed across
-datasets, which is the right control for a cross-dataset comparison but
-penalises datasets with few images per class, since the binding resource is
-optimiser steps rather than epochs. The lower block re-runs the two datasets
-that fall short at four times that budget, on the same seeds and classes;
-$^*$marks the shared-budget STL-10 row it supersedes
-(\S\ref{sec:crossdataset_stl}).}
-\label{tab:cross}
-\begin{tabular}{@{}lccccccc@{}}
-\toprule
-\textbf{Dataset} & \textbf{\#T} & \textbf{Chance} & \textbf{TA} & \textbf{FA}$\downarrow$ & \textbf{RA} & \textbf{MIA} \\
-\midrule
-CIFAR-10    & 1 & 10.0\% & $86.13 \pm 0.02$ & $\mathbf{1.87} \pm 0.25$ & $100.00 \pm 0.00$ & $0.529 \pm 0.001$ \\
-MNIST       & 10 & 10.0\% & $90.00 \pm 0.64$ & $\mathbf{6.17} \pm 2.81$ & $99.49 \pm 0.04$ & $0.497 \pm 0.009$ \\
-SVHN        & 1 & 10.0\% & $89.69 \pm 0.02$ & $\mathbf{5.75} \pm 0.17$ & $97.26 \pm 0.01$ & $0.525 \pm 0.001$ \\
-STL-10$^*$  & 1 & 10.0\% & $92.84 \pm 0.02$ & $75.67 \pm 1.70$ & $99.38 \pm 0.10$ & $0.466 \pm 0.005$ \\
-PathMNIST   & 9 & 11.1\% & $80.96 \pm 5.39$ & $\mathbf{5.82} \pm 3.42$ & $98.88 \pm 0.31$ & $0.483 \pm 0.084$ \\
-CIFAR-100   & 9 & \phantom{0}1.0\% & $76.17 \pm 0.86$ & $4.07 \pm 5.51$ & $92.19 \pm 0.84$ & $0.500 \pm 0.037$ \\
-\midrule
-\multicolumn{7}{@{}l}{\emph{Extended budget} (60 epochs; same seeds, classes and tolerances)} \\
-STL-10      & 1 & 10.0\% & $85.15 \pm 0.05$ & $\mathbf{1.73} \pm 0.77$ & $98.87 \pm 0.04$ & $0.491 \pm 0.007$ \\
-CIFAR-100   & 9 & \phantom{0}1.0\% & $75.50 \pm 0.64$ & $\mathbf{1.27} \pm 0.37$ & $91.32 \pm 0.88$ & $0.494 \pm 0.038$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[t]
-\centering
-\caption{\textbf{CIFAR-10 class-0 forgetting.} \ours{} is a 3-seed mean $\pm$
-std. Methods with FA~$>80\%$ attain MIA~$\approx 0.5$ trivially, by barely
-changing the model. $\dagger$Our reproduction; $\ddagger$our reproduction with
-unified MIA. $^\S$A-GEM projection applied to plain gradient ascent, with
-\ours{}'s KD anchor and retain-confusion target removed: the direct
-projected-gradient baseline, isolating what the projection alone achieves.}
-\label{tab:cifar10}
-\begin{tabular}{@{}lcccc@{}}
-\toprule
-\textbf{Method} & \textbf{TA} & \textbf{FA}$\downarrow$ & \textbf{RA} & \textbf{MIA} \\
-\midrule
-Retrain (gold standard) & 92.5 & 0.0 & 100.0 & 0.500 \\
-\midrule
-SalUn$^\dagger$        & 84.0 & 0.0  & 97.1 & 0.497 \\
-Bad Teacher$^\ddagger$ & 82.0 & 29.7 & 90.2 & 0.499 \\
-SCRUB$^\ddagger$       & 93.3 & 88.8 & 97.7 & 0.515 \\
-NegGrad+$^\ddagger$    & 94.2 & 84.8 & 99.3 & 0.525 \\
-\midrule
-Projection-only$^\S$   & 86.23 & 18.66 & 99.90 & 0.511 \\
-\midrule
-\textbf{\ours{}} & $\mathbf{86.13}\pm.02$ & $\mathbf{1.87}\pm.25$ & $\mathbf{100.00}\pm.00$ & $\mathbf{0.529}\pm.001$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
 \paragraph{The projection alone does not unlearn.}
 The \emph{projection-only} row is the direct projected-gradient baseline: A-GEM
 projection applied to plain gradient ascent, with the KD anchor and the
@@ -985,8 +1646,7 @@ Forget class & TA (\%) & FA (\%)$\downarrow$ & RA (\%) & MIA \\
 \end{tabular}
 \end{table}
 
-\subsection{Momentum Is Not Incidental: Why the Guarantee Must Match the Optimiser}
-\label{sec:momentum_ablation}
+\subsection{Momentum in Detail}\label{app:momentum}
 
 The most direct route to an exact per-step guarantee is to remove momentum, so
 that the applied update \emph{is} the projected gradient. Table~\ref{tab:momentum}
@@ -1014,28 +1674,6 @@ datasets. Retain accuracy stays high throughout (Table~\ref{tab:momentum}),
 because the model barely moves.}
 \label{fig:momentum}
 \end{figure}
-
-\begin{table}[t]
-\centering
-\caption{\textbf{Momentum ablation.} Removing momentum to simplify the analysis
-breaks forgetting on five of six datasets. High RA with high FA indicates the
-model barely changed. Same configs, seeds, and stopping rules throughout.}
-\label{tab:momentum}
-\begin{tabular}{@{}lccccc@{}}
-\toprule
-& & \multicolumn{2}{c}{$\mu=0$ (analysis-friendly)} & \multicolumn{2}{c}{Projected momentum (ours)} \\
-\cmidrule(lr){3-4}\cmidrule(lr){5-6}
-\textbf{Dataset} & \textbf{Chance} & \textbf{FA}$\downarrow$ & \textbf{RA} & \textbf{FA}$\downarrow$ & \textbf{RA} \\
-\midrule
-CIFAR-10  & 10.0\% & \phantom{0}5.8 & 100.0 & \phantom{0}1.9 & 100.0 \\
-MNIST     & 10.0\% & 95.9 & \phantom{0}99.5 & \phantom{0}6.2 & 99.5 \\
-SVHN      & 10.0\% & 61.9 & \phantom{0}97.4 & \phantom{0}5.8 & 97.3 \\
-STL-10    & 10.0\% & 99.7 & \phantom{0}99.4 & 75.7 & 99.4 \\
-PathMNIST & 11.1\% & 16.4 & \phantom{0}99.0 & \phantom{0}5.8 & 98.9 \\
-CIFAR-100 & \phantom{0}1.0\% & 73.7 & \phantom{0}94.1 & \phantom{0}4.1 & 92.2 \\
-\bottomrule
-\end{tabular}
-\end{table}
 
 \paragraph{Is the dependence ours, or the field's?} A natural objection is that
 this ablation only tells us something about \ours{}. If every gradient-based
@@ -1121,20 +1759,7 @@ increase of $+1.05\times 10^{-3}$, consistent with the $O(\eta^2)$ term of
 Eq.~\ref{eq:thm1}.
 \end{itemize}
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=\textwidth]{fig_guarantee.png}
-\caption{\textbf{Theorem~\ref{thm:retain_safety} audited on a real run}
-(CIFAR-10 class~0, 120 steps). \textbf{(a)}~Alignment with the retain gradient,
-normalised to $\cos(\cdot,\gr)$. Before projection every step lies in the
-retain-harming half-space (mean $-0.77$); after projection the alignment is
-indistinguishable from zero ($|\cos| \le 7.4\times10^{-7}$, the float32
-accumulation scale). \textbf{(b)}~The applied update never exceeds the bound
-$c/(1-\mu)=10$ of Eq.~\ref{eq:thm1}, peaking at $9.16$---tight, but respected.}
-\label{fig:guarantee}
-\end{figure}
-
-\subsection{BatchNorm Recalibration and the GroupNorm Backbone}\label{sec:bn_results}
+\subsection{BatchNorm Recalibration in Detail}\label{app:bn}
 
 Table~\ref{tab:gn} reports \ours{} with a GroupNorm backbone across datasets.
 GroupNorm keeps forgetting intact on four of five datasets at a modest TA cost
@@ -1180,31 +1805,7 @@ of estimator is not what drives the result. All
 accuracies here are measured under deterministic (test-time) transforms; leaving
 training augmentation active perturbs individual rows by several points.
 
-\begin{table}[t]
-\centering
-\caption{\textbf{BatchNorm recalibration} (CIFAR-10, class~0), using
-\texttt{update\_bn} on the retain set: BatchNorm buffers are reset and
-recomputed, no weight is touched. Every baseline and the un-unlearned base model
-are unaffected ($\Delta F \le 0$); \ours{} with a BatchNorm backbone loses
-essentially all of its forgetting. The two backbones without running statistics
-are outside the operator's reach by construction. NegGrad+ is omitted: no
-checkpoint for it was available.}
-\label{tab:bnrecal}
-\begin{tabular}{@{}lccccc@{}}
-\toprule
-Configuration & pre-$F$ & post-$F$ & $\boldsymbol{\Delta F}$ & pre-TA & post-TA \\
-\midrule
-Base model (no unlearning)  & $100.0$ & $99.8$ & $-0.2$ & $95.5$ & $92.9$ \\
-SalUn                       & $0.0$   & $0.0$  & $+0.0$ & $84.7$ & $84.4$ \\
-Bad Teacher                 & $28.7$  & $28.4$ & $-0.3$ & $81.5$ & $84.0$ \\
-SCRUB                       & $89.3$  & $85.7$ & $-3.6$ & $93.5$ & $93.2$ \\
-\midrule
-\ours{} (BatchNorm, frozen) & $1.4$   & $99.7$ & $\mathbf{+98.4}$ & $86.1$ & $92.9$ \\
-\ours{} (GroupNorm)         & $4.9$   & $4.9$  & $\mathbf{0.0}$   & $84.2$ & $84.2$ \\
-\ours{} (ViT-B/16, LayerNorm) & $9.6$ & $9.6$  & $\mathbf{0.0}$   & $87.0$ & $87.0$ \\
-\bottomrule
-\end{tabular}
-\end{table}
+
 
 \paragraph{The vulnerability is ours, not the field's---in our reproductions.}
 The baseline rows matter more than \ours{}'s. Every one of them is unaffected by
@@ -1261,19 +1862,7 @@ removes the constraint itself: it keeps BatchNorm, and makes \ours{} robust to
 the attack rather than outside its reach.}
 
 \begingroup\color{revised}% ---- new subsection: everything to \endgroup is added
-\subsection{Keeping BatchNorm: Recalibrating During Unlearning}\label{sec:bn_robust}
-
-\begin{figure}[t]
-\centering\color{revised}
-\includegraphics[width=\textwidth]{fig_bnrobust_mechanism.png}
-\caption{\textbf{What BN-robust \ours{} changes.} $R$ resets the BatchNorm
-statistics and recomputes them on retain data without touching a weight. With
-frozen statistics the forgetting lives in the mismatch between $\theta_T$ and
-$\phi_0$, and the attack removes it; BN-robust ships statistics consistent with
-its weights, so the attack has nothing to recover. Forget accuracies are
-CIFAR-10 class~0, means over three seeds (Table~\ref{tab:bnrobust}).}
-\label{fig:bnrobust_mech}
-\end{figure}
+\subsection{BN-robust \ours{} in Detail}\label{app:bn_robust}
 
 The diagnosis above points at its own remedy: if the weights learn to forget
 against statistics that are allowed to go stale, the statistics should never be
@@ -1317,14 +1906,14 @@ statistics still use the full set.
 \begin{figure}[t]
 \centering\color{revised}
 \includegraphics[width=\textwidth]{fig_bnrobust_stopping.png}
-\caption{\textbf{Why stopping must be calibrated.} Forget accuracy per epoch
+\caption{\added{\textbf{Why stopping must be calibrated.} Forget accuracy per epoch
 under the in-loop statistics (what naive stopping reads) and under the
 statistics that ship (what calibrated stopping reads); log scale. The in-loop
 reading runs below the shipped one, so a naive rule stops early and ships above
 chance: (a)~one epoch early on class~0, (b)~four epochs early on class~9,
 shipping $19.5\%$ instead of $8.9\%$. (c)~On class~4 the shipped FA plateaus just
 above $10\%$ and the run reaches the epoch cap; the best-epoch rule ships epoch~22
-($10.2\%$) rather than the last ($12.0\%$).}
+($10.2\%$) rather than the last ($12.0\%$).}}
 \label{fig:bnrobust_stop}
 \end{figure}
 
@@ -1336,42 +1925,7 @@ $100$ rather than $200$ epochs ($91.89\%$), and a retrained MNIST base
 with the rest of \S\ref{sec:experiments}; every comparison below is between arms
 that share a base.
 
-\begin{table}[t]
-\centering\color{revised}
-\caption{\textbf{BN-robust \ours{} under BatchNorm recalibration} (CIFAR-10,
-class~0, seeds $\{42,123,456\}$; \texttt{update\_bn} on the retain set, as in
-Table~\ref{tab:bnrecal}). Every row shares the $93.97\%$ base except GroupNorm,
-which needs its own. The un-unlearned base is the control: recalibrating it
-changes nothing. \emph{Naive} stopping reads FA under the in-loop statistics,
-\emph{calibrated} stopping under the statistics that ship. Time is wall-clock per
-run on one GPU.}
-\label{tab:bnrobust}
-\small
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}lcccccccc@{}}
-\toprule
-Configuration & base TA & pre-$F$ & post-$F$ & $\boldsymbol{\Delta F}$ & TA & RA & epochs & min \\
-\midrule
-Base model (no unlearning)     & $93.97$ & $99.80$ & $99.82$ & $+0.0$ & $93.97$ & ---     & ---          & ---    \\
-\ours{} (BatchNorm, frozen)    & $93.97$ & $8.51 \pm 0.30$  & $99.12 \pm 0.09$ & $\mathbf{+90.6}$ & $85.20$ & $97.34$ & $2$          & $1.9$  \\
-\ours{} (GroupNorm)            & $91.89$ & $5.91 \pm 0.09$  & n/a              & n/a              & $83.13$ & $98.92$ & $3$          & $2.5$  \\
-BN-robust, naive stopping      & $93.97$ & $11.43 \pm 1.90$ & $11.44 \pm 1.87$ & $\mathbf{0.0}$   & $84.42$ & $95.46$ & $11$--$13$   & $9.8$  \\
-BN-robust, calibrated stopping & $93.97$ & $9.19 \pm 0.08$  & $9.18 \pm 0.07$  & $\mathbf{0.0}$   & $84.30$ & $95.59$ & $13$         & $13.3$ \\
-\bottomrule
-\end{tabular}
-\end{table}
 
-\begin{figure}[t]
-\centering\color{revised}
-\includegraphics[width=\textwidth]{fig_bnrobust_attack.png}
-\caption{\textbf{BN-robust survives the recalibration attack.} (a)~Forget
-accuracy before (open) and after (filled) \texttt{update\_bn} on the retain set,
-class~0, means over three seeds; on MNIST the frozen configuration's forgetting
-is undone completely. (b)~Forget accuracy after the attack when the attacker
-recalibrates on the retain set, the full training set (forget class included),
-or the test set (CIFAR-10 class~0, three seeds; BN-robust with naive stopping).}
-\label{fig:bnrobust_attack}
-\end{figure}
 
 \paragraph{It survives the attack it was built against, and two it was not.}
 Calibrated BN-robust forgets class~0 to $9.19\%$ and stays at $9.18\%$ under
@@ -1619,7 +2173,7 @@ to how much of it is removed, and that removing all of it is what converts an
 empirical tendency into a guarantee. A like-for-like comparison remains future
 work (\S\ref{sec:limitations}).
 
-\subsection{Privacy--Utility Frontier and Robustness Diagnostics}
+\subsection{Privacy--Utility Frontier and Robustness Diagnostics}\label{sec:sweeps}
 
 We sweep the two tolerances of Eq.~\ref{eq:problem} independently on CIFAR-10
 class~0 (Table~\ref{tab:sweeps}). The results are asymmetric: one tolerance is
@@ -2081,63 +2635,7 @@ also untested; the experiment costs one unlearning run plus one retrained
 reference per class.
 
 % ============================================================
-\section{Related Work}\label{sec:related}
-
-\paragraph{Exact unlearning.}
-SISA \citep{bourtoule2021sisa} partitions data into shards so that removal
-requires retraining only the affected shard; the per-deletion cost approaches
-full retraining as shard count grows. Certified removal
-\citep{guo2020certified} gives exact guarantees for convex models but does not
-extend to deep networks.
-
-\paragraph{Gradient-based approximate unlearning.}
-GA \citep{thudi2022unrolling} maximises forget-set loss, with no mechanism to
-prevent the same direction from degrading retain performance. Amnesiac
-unlearning \citep{graves2021amnesiac} subtracts cached per-sample updates,
-requiring $O(T|\Df|)$ storage. NegGrad+ optimises
-$-\lossf + \lambda\lossr$ directly, which is the Lagrangian relaxation of
-Eq.~\ref{eq:problem} rather than a solution to it: the retain term shifts the
-optimum without bounding any single step, so the weighted sum is exactly the
-soft treatment Theorem~\ref{thm:separation}(iv) separates us from.
-
-\paragraph{Saliency and Fisher methods.}
-SalUn \citep{fan2024salun} applies random-label updates inside a top-50\%
-saliency mask: strong empirically (FA~$=0\%$ on CIFAR-10) but with no formal
-retain guarantee and no control over the degree of forgetting. Fisher-based
-methods \citep{golatkar2020eternal,golatkar2021scrubbing} and SSD
-\citep{foster2024ssd} weight parameters by estimated importance, requiring
-Hessian approximations that scale poorly.
-
-\paragraph{Knowledge distillation.}
-Bad Teacher \citep{chundawat2023badteacher} uses competent/incompetent teachers.
-SCRUB \citep{kurmanji2023unbounded} is closest in motivation---both draw on CL
-intuitions and use KD to anchor retain behaviour---but differs algorithmically:
-SCRUB alternates forget and retain steps balanced by $\lambda$, so its balance is
-hyperparameter-dependent, whereas \ours{}'s retain safety holds by construction
-(Theorem~\ref{thm:separation}); and SCRUB ascends the forget loss, which is
-unstable in either direction, whereas \klr{} converges to a specific target
-distribution.
-
-\paragraph{Continual learning connection, and the closest prior work.}
-A-GEM \citep{chaudhry2019agem} projects task gradients to avoid catastrophic
-forgetting. The CL--MU duality has been noted conceptually
-\citep{nguyen2020variational,kurmanji2023unbounded}. Closest to \ours{}, recent
-work \citep{patel2025learning} also targets the forget--retain gradient
-conflict, but through an \emph{implicit, soft} regulariser encouraging a positive
-inner product---with no per-step constraint and no formal guarantee. More
-broadly, gradient projection and conflict resolution are now actively explored
-for unlearning, but as heuristics rather than as constrained updates carrying a
-guarantee. \ours{} enforces $\langle u_t,\gr\rangle \ge 0$ explicitly at every
-step, on the post-momentum update, which is the difference between \emph{softly
-discouraging} conflict and \emph{provably eliminating} it---and, relative to
-guarantees stated for momentum-free surrogates, the difference between a bound
-that describes the deployed optimiser and one that does not.
-\S\ref{sec:strength} tests the mechanism this distinction rests on by varying
-our own projection between a soft penalty and the hard constraint; a
-like-for-like run of that method on our stack remains future work.
-
-% ============================================================
-\section{Limitations}\label{sec:limitations}
+\section{Limitations in Full}\label{app:limitations}
 
 \paragraph{Compute scales with classes and with data scarcity, and we cannot
 predict it.} At the shared 15-epoch budget \ours{} leaves STL-10 at
@@ -2246,428 +2744,6 @@ usable ($\mathrm{TA} = 34.6\%$, $\mathrm{RA} = 47.9\%$), so the attack recovers
 the class only by destroying the model it attacks. \ours{} also does not provide
 formal $(\varepsilon,\delta)$-DP guarantees.
 
-% ============================================================
-\section{Conclusion}\label{sec:conclusion}
-
-We presented \ours{}, built on the observation that unlearning is the dual of
-continual learning, and argued that for a per-step guarantee to be meaningful it
-must be stated for the update the optimiser actually applies. Projecting the
-post-momentum update rather than the raw gradient achieves this: the guarantee of
-Theorem~\ref{thm:retain_safety} is exact for the deployed optimiser, and the
-momentum ablation shows the alternative---removing momentum to simplify the
-analysis---breaks forgetting on five of six datasets. Across six datasets and 31
-forgetting tasks, \ours{} attains per-dataset mean FA~$\le 6.2\%$ at a shared
-epoch budget---STL-10 needs four times that budget, at which it reaches
-$2.8\%$---with RA~$\ge 97.2\%$ ($92.2\%$ on CIFAR-100), while step-level logging
-confirms the constraint is active at every step and satisfied at every step. On CIFAR-10, calibrated against a retrained reference rather than against
-$0.5$, \ours{} is the closest of the methods compared on the loss-based
-membership-inference attack; on PathMNIST, where the reference itself varies by
-$0.4$ across forgotten classes, that agreement holds for one class of four and
-we do not claim it in general. \added{On BatchNorm backbones, the forgetting
-\ours{} achieves against frozen statistics does not survive recomputing them.
-Recomputing them throughout unlearning instead, and stopping on the forget
-accuracy the shipped model will actually have, makes it survive on every
-CIFAR-10 class and on MNIST.}
-
-More broadly, the CL--MU duality is an underexploited design space: any CL
-technique that protects old-task knowledge has a natural MU counterpart that
-protects retained knowledge during erasure. We also draw a methodological
-conclusion that generalises beyond this method---when an optimiser detail
-(momentum, clipping order, projection magnitude) is chosen for analytical
-convenience, it should be checked against the behaviour it was supposed to
-explain.
-
-% tmlr.bst when available; plainnat keeps the document compilable without it.
-\IfFileExists{tmlr.bst}{\bibliographystyle{tmlr}}{\bibliographystyle{plainnat}}
-\bibliography{../references}
-
-% ============================================================
-\appendix
-\section{Notation, Assumptions, and the Analysed Update}\label{app:setup}
-
-We restate the update exactly as implemented, since the entire point of
-Theorem~\ref{thm:retain_safety} is that the analysed object and the executed
-object coincide.
-
-\paragraph{Notation.}
-$\Lrt(\theta) = \lossr(\theta) + \beta\losskd(\theta,\theta_0;\Dr)$ is the
-composite retain objective evaluated on the sampled retain mini-batch at step
-$t$, and $\gr := \nabla_\theta\Lrt(\theta_t)$ its gradient. Note $\beta$ does not
-appear separately in the bounds because $\gr$ is already the composite gradient.
-$\gf := \nabla_\theta\lossf(\theta_t;x_f)$ is the forget gradient on the forget
-mini-batch. $\lambda_{\mathrm{wd}} \ge 0$ is weight decay, $c>0$ the clipping
-threshold, $\eta>0$ the learning rate, and $\mu\in[0,1)$ the momentum
-coefficient. $\|\cdot\|$ is the Euclidean norm on the concatenation of all
-trainable parameters.
-
-\paragraph{The projection operator.}
-For $g \ne 0$ define
-\begin{equation}\label{eq:app_proj}
-\Pi_{g}(v) \;=\;
-\begin{cases}
-v, & \langle v,g\rangle \ge 0,\\[2pt]
-v - \dfrac{\langle v,g\rangle}{\|g\|^{2}}\,g, & \langle v,g\rangle < 0,
-\end{cases}
-\qquad
-\widehat{\Pi}_{g}(v) \;=\;
-\begin{cases}
-\Pi_g(v)\,\dfrac{\|v\|}{\|\Pi_g(v)\|}, & \Pi_g(v) \ne 0,\\[4pt]
-0, & \Pi_g(v) = 0,
-\end{cases}
-\end{equation}
-where $\widehat{\Pi}$ is the \emph{magnitude-preserving} variant used by \ours{}
-(\S\ref{sec:optimiser}). In the implementation the case $\Pi_g(v)=0$ is detected
-by the guard $\|\Pi_g(v)\| \le \epsilon\|v\|$ with $\epsilon = 10^{-8}$.
-
-\paragraph{The analysed (and executed) update.}
-With $v_{-1}=0$, for $t = 0,1,2,\dots$
-\begin{align}
-d_t &= \mathrm{clip}_c\!\big(\gf^{(t)} + \lambda_{\mathrm{wd}}\theta_t\big),
-      &&\text{where } \mathrm{clip}_c(x) = x\cdot\min\!\big(1, c/\|x\|\big),
-      \label{eq:app_clip}\\
-v_t &= \mu\,v_{t-1} + d_t, \label{eq:app_mom}\\
-u_t &= \widehat{\Pi}_{\gr^{(t)}}(v_t), \label{eq:app_projstep}\\
-\theta_{t+1} &= \theta_t - \eta\,u_t. \label{eq:app_step}
-\end{align}
-Three orderings are load-bearing and are stated here so they cannot be lost in
-implementation: clipping acts on $d_t$ \emph{before} the momentum accumulation
-(\ref{eq:app_clip})--(\ref{eq:app_mom}); the projection acts on the accumulated
-$v_t$, i.e.\ on the update rather than on the gradient (\ref{eq:app_projstep});
-and no clipping is applied after (\ref{eq:app_projstep}).
-
-\paragraph{Assumptions.}
-\begin{itemize}
-\item[(A1)] $\Lrt$ is $L$-smooth: $\|\nabla\Lrt(x)-\nabla\Lrt(y)\| \le L\|x-y\|$
-for all $x,y$.
-\item[(A2)] Clipping is applied as in (\ref{eq:app_clip}), so $\|d_t\| \le c$ for
-all $t$.
-\item[(A3)] $\mu \in [0,1)$.
-\end{itemize}
-(A1) is the standard smoothness assumption of first-order analysis; for ReLU
-networks it holds piecewise, and we treat it as an idealisation, as is
-conventional. (A2) and (A3) are properties of the implementation, not
-assumptions about the data.
-
-% ------------------------------------------------------------
-\section{Proof of Theorem~\ref{thm:retain_safety}}\label{app:thm1}
-
-We prove three lemmas and then assemble the theorem.
-
-\begin{lemma}[Projection properties]\label{lem:proj}
-Let $g \ne 0$ and $v$ be arbitrary. Then
-\begin{enumerate}
-\item[(i)] $\langle \Pi_g(v), g\rangle \ge 0$, with equality whenever
-$\langle v,g\rangle < 0$;
-\item[(ii)] $\|\Pi_g(v)\| \le \|v\|$;
-\item[(iii)] $\langle \widehat{\Pi}_g(v), g\rangle \ge 0$ and
-$\|\widehat{\Pi}_g(v)\| \le \|v\|$, with $\|\widehat{\Pi}_g(v)\| = \|v\|$
-whenever $\Pi_g(v)\ne 0$.
-\end{enumerate}
-\end{lemma}
-
-\begin{proof}
-(i) If $\langle v,g\rangle \ge 0$ then $\Pi_g(v)=v$ and the claim is immediate.
-If $\langle v,g\rangle<0$ then
-\[
-\langle \Pi_g(v), g\rangle
-= \Big\langle v - \tfrac{\langle v,g\rangle}{\|g\|^2}g,\; g\Big\rangle
-= \langle v,g\rangle - \tfrac{\langle v,g\rangle}{\|g\|^2}\|g\|^2 = 0 .
-\]
-(ii) In the first branch this is an equality. In the second branch, $\Pi_g$ is
-the orthogonal projection onto the hyperplane $\{u:\langle u,g\rangle=0\}$;
-writing $v = \Pi_g(v) + \tfrac{\langle v,g\rangle}{\|g\|^2}g$ as a sum of two
-orthogonal vectors, Pythagoras gives
-\begin{equation}\label{eq:app_pyth}
-\|v\|^2 = \|\Pi_g(v)\|^2 + \frac{\langle v,g\rangle^2}{\|g\|^2}
-\;\ge\; \|\Pi_g(v)\|^2 .
-\end{equation}
-(iii) If $\Pi_g(v)=0$ then $\widehat{\Pi}_g(v)=0$ and both claims are trivial.
-Otherwise $\widehat{\Pi}_g(v) = s\,\Pi_g(v)$ with
-$s = \|v\|/\|\Pi_g(v)\| > 0$, so
-$\langle \widehat{\Pi}_g(v),g\rangle = s\langle \Pi_g(v),g\rangle \ge 0$ by (i),
-and $\|\widehat{\Pi}_g(v)\| = s\|\Pi_g(v)\| = \|v\|$.
-\end{proof}
-
-Part (iii) is the formal content of the design choice in
-\S\ref{sec:optimiser}(iii): rescaling restores the magnitude that
-(\ref{eq:app_pyth}) removes, and because $s>0$ it cannot flip the sign of the
-inner product. The guarantee is therefore invariant to the rescaling, while the
-step magnitude is not.
-
-\begin{lemma}[Velocity norm bound]\label{lem:vel}
-Under (A2) and (A3), for every $t \ge 0$,
-\begin{equation}\label{eq:app_velbound}
-\|v_t\| \;\le\; c\,\frac{1-\mu^{\,t+1}}{1-\mu} \;<\; \frac{c}{1-\mu}.
-\end{equation}
-\end{lemma}
-
-\begin{proof}
-Unrolling (\ref{eq:app_mom}) from $v_{-1}=0$ gives
-$v_t = \sum_{k=0}^{t}\mu^{\,t-k} d_k$. By the triangle inequality and (A2),
-\[
-\|v_t\| \;\le\; \sum_{k=0}^{t}\mu^{\,t-k}\|d_k\|
-\;\le\; c\sum_{j=0}^{t}\mu^{\,j}
-\;=\; c\,\frac{1-\mu^{\,t+1}}{1-\mu}
-\;<\; \frac{c}{1-\mu},
-\]
-the last step using $\mu\in[0,1)$ so that $\mu^{t+1}>0$ and the geometric series
-converges.
-\end{proof}
-
-Lemma~\ref{lem:vel} is where the clip-before-momentum ordering is used: it
-requires $\|d_k\|\le c$ for the \emph{ingredients} of the sum. Note also that the
-bound is attained only in the limit of perfectly aligned successive steps; we
-observe $\max_t\|u_t\| = 9.16$ against $c/(1-\mu)=10$ in
-\S\ref{sec:alignment}, so it is tight in practice.
-
-\begin{lemma}[Descent step]\label{lem:descent}
-Under (A1), for any vector $u$ and $\theta_{+} = \theta_t - \eta u$,
-\begin{equation}\label{eq:app_descent}
-\Lrt(\theta_{+}) \;\le\; \Lrt(\theta_t) - \eta\langle u, \gr\rangle
-+ \tfrac{1}{2}L\eta^2\|u\|^2 .
-\end{equation}
-\end{lemma}
-
-\begin{proof}
-Standard consequence of $L$-smoothness (the descent lemma): (A1) implies
-$\Lrt(y) \le \Lrt(x) + \langle \nabla\Lrt(x), y-x\rangle + \tfrac{L}{2}\|y-x\|^2$
-for all $x,y$. Substituting $x=\theta_t$, $y=\theta_+$, so that
-$y-x = -\eta u$ and $\nabla\Lrt(x)=\gr$, gives (\ref{eq:app_descent}).
-\end{proof}
-
-\begin{theorem}[Theorem~\ref{thm:retain_safety}, restated]\label{thm:app_main}
-Under (A1)--(A3), the update (\ref{eq:app_clip})--(\ref{eq:app_step}) satisfies,
-at every step $t$ and unconditionally,
-\begin{align}
-\text{(a)}\quad & \langle u_t, \gr^{(t)}\rangle \;\ge\; 0, \label{eq:app_a}\\
-\text{(b)}\quad & \|u_t\| \;\le\; \|v_t\| \;<\; \frac{c}{1-\mu},
-   \quad\text{with }\|u_t\|=\|v_t\|\text{ unless }\Pi_{\gr}(v_t)=0,
-   \label{eq:app_b}\\
-\text{(c)}\quad & \Lrt(\theta_{t+1}) \;\le\; \Lrt(\theta_t)
-   + \tfrac{1}{2}L\eta^{2}\Big(\frac{c}{1-\mu}\Big)^{\!2}. \label{eq:app_c}
-\end{align}
-\end{theorem}
-
-\begin{proof}
-(a) Immediate from Lemma~\ref{lem:proj}(iii) applied to $v_t$ with
-$g=\gr^{(t)}$, using (\ref{eq:app_projstep}). If $\gr^{(t)}=0$ the projection is
-undefined and is skipped; then $\langle u_t,\gr^{(t)}\rangle = 0$ and (a) holds
-trivially (see Remark~\ref{rem:degenerate}).
-
-(b) Combine Lemma~\ref{lem:proj}(iii) with Lemma~\ref{lem:vel}.
-
-(c) By Lemma~\ref{lem:descent} with $u = u_t$,
-\[
-\Lrt(\theta_{t+1}) \le \Lrt(\theta_t) - \eta\underbrace{\langle u_t,\gr^{(t)}\rangle}_{\ge\,0\ \text{by (a)}}
-+ \tfrac{1}{2}L\eta^2\underbrace{\|u_t\|^2}_{<\,(c/(1-\mu))^2\ \text{by (b)}}
-\;\le\; \Lrt(\theta_t) + \tfrac{1}{2}L\eta^2\Big(\frac{c}{1-\mu}\Big)^{\!2}. \qedhere
-\]
-\end{proof}
-
-The first-order change in the sampled retain objective is thus non-positive at
-every step; the only admissible increase is the $O(\eta^2)$ curvature term. The
-guarantee is \emph{unconditional} in the sense that it requires no assumption on
-$\gf$, on the alignment between forget and retain gradients, or on the data.
-
-\begin{corollary}[Momentum-free reduction]\label{cor:mu0}
-Setting $\mu=0$ gives $v_t = d_t$, $\|u_t\|\le c$, and
-$\Lrt(\theta_{t+1}) \le \Lrt(\theta_t) + \tfrac{1}{2}L\eta^2c^2$, recovering the
-momentum-free per-step bound.
-\end{corollary}
-
-\begin{corollary}[A-GEM reduction]\label{cor:agem}
-Setting $\mu=0$, $c=\infty$ and letting $\eta\to0$ recovers the first-order
-A-GEM guarantee $\langle u_t,\gr\rangle\ge0$ \citep{chaudhry2019agem}.
-\end{corollary}
-
-Corollary~\ref{cor:mu0} is worth reading alongside
-Table~\ref{tab:momentum}: the $\mu=0$ bound is \emph{formally tighter} (by a
-factor $(1-\mu)^{-2}=100$ at $\mu=0.9$), yet the configuration it describes
-fails to unlearn on five of six datasets. A tighter bound on a method that does
-not forget is not the better result---which is precisely why we analyse the
-update that is actually run.
-
-\subsection{Why the Projection Must Be Applied to the Update}\label{app:counterexample}
-
-The following proposition shows that the design choice of
-\S\ref{sec:optimiser}(i) is not a matter of convenience: projecting the
-\emph{gradient} provides no per-step guarantee once $\mu>0$, however carefully
-each individual gradient is projected.
-
-\begin{proposition}[Gradient-projection is insufficient under momentum]\label{prop:counter}
-Consider the variant that projects the gradient and then accumulates momentum:
-\[
-\tilde d_t = \mathrm{clip}_c\big(\Pi_{\gr^{(t)}}(\gf^{(t)})\big), \qquad
-v_t = \mu v_{t-1} + \tilde d_t, \qquad \theta_{t+1} = \theta_t - \eta v_t ,
-\]
-so that every accumulated ingredient satisfies
-$\langle \tilde d_t, \gr^{(t)}\rangle \ge 0$. Then for every $\mu \in (0,1)$
-there exist retain and forget gradients for which the applied update $v_t$
-satisfies $\langle v_t, \gr^{(t)}\rangle < 0$, i.e.\ the step strictly increases
-the sampled retain loss to first order.
-\end{proposition}
-
-\begin{proof}
-Work in $\mathbb{R}^2$ with $\lambda_{\mathrm{wd}}=0$, $c=\infty$ (clipping
-inactive), and $v_{-1}=0$.
-
-\emph{Step $0$.} Let $\gr^{(0)} = (1,0)$ and $\gf^{(0)} = (-1,1)$. Then
-$\langle \gf^{(0)},\gr^{(0)}\rangle = -1 < 0$, so the projection fires:
-\[
-\tilde d_0 = \Pi_{\gr^{(0)}}(\gf^{(0)})
-= (-1,1) - \frac{-1}{1}(1,0) = (0,1),
-\]
-which is retain-safe, $\langle \tilde d_0, \gr^{(0)}\rangle = 0$. Hence
-$v_0 = (0,1)$.
-
-\emph{Step $1$.} Let the retain mini-batch change so that
-$\gr^{(1)} = (0,-1)$, and let $\gf^{(1)} = (1,0)$. Then
-$\langle \gf^{(1)},\gr^{(1)}\rangle = 0 \ge 0$, so no projection is needed and
-$\tilde d_1 = (1,0)$, again retain-safe:
-$\langle \tilde d_1,\gr^{(1)}\rangle = 0$. The applied update is
-\[
-v_1 = \mu v_0 + \tilde d_1 = \mu(0,1) + (1,0) = (1,\mu),
-\qquad
-\langle v_1, \gr^{(1)}\rangle = \langle (1,\mu), (0,-1)\rangle = -\mu \;<\; 0
-\]
-for every $\mu>0$. By Lemma~\ref{lem:descent} the first-order change in $\Lrt$
-is $-\eta\langle v_1,\gr^{(1)}\rangle = +\eta\mu > 0$: the retain loss strictly
-increases to first order, even though \emph{every} projected gradient entering
-the buffer was individually retain-safe.
-\end{proof}
-
-The mechanism is transparent: the momentum buffer carries a direction that was
-certified against $\gr^{(0)}$ into a step whose constraint is $\gr^{(1)}$, and
-the projection at step $1$ never inspects the carried term. Projecting $v_t$
-itself (\ref{eq:app_projstep}) removes exactly this failure, because the
-certificate is issued against the constraint in force at the step where the
-update is applied. Note also that $\mu$ appears linearly in the violation, so the
-defect grows with the momentum coefficient rather than vanishing.
-
-\subsection{Why Clipping Must Precede Accumulation}\label{app:clip_order}
-
-\begin{proposition}[Clipping the update destroys momentum amplification]\label{prop:clip}
-Consider the variant that clips the final update,
-$u_t = \mathrm{clip}_c(\widehat{\Pi}_{\gr}(\mu v_{t-1} + \tilde g_t))$ with
-$\tilde g_t$ unclipped. Then $\|u_t\| \le c$ for all $t$, identical to the bound
-obtained at $\mu=0$ (Corollary~\ref{cor:mu0}), irrespective of $\mu$.
-\end{proposition}
-
-\begin{proof}
-Immediate from the definition of $\mathrm{clip}_c$.
-\end{proof}
-
-Proposition~\ref{prop:clip} is trivial as mathematics but decisive in practice.
-In our runs the raw forget-gradient norm is ${\sim}100\times$ the clipping
-threshold ($\|\gf\| \in [102,149]$ with $c=1$ on CIFAR-10), so clipping is active
-at every step and the cap is always attained. Clipping after accumulation
-therefore yields an applied step of magnitude exactly $\eta c$ --- the same
-magnitude as the momentum-free configuration, and hence the same failure to
-forget documented in Table~\ref{tab:momentum}. The ordering in
-(\ref{eq:app_clip})--(\ref{eq:app_mom}) instead admits
-$\|v_t\| \to c/(1-\mu)$, a $10\times$ larger step at $\mu=0.9$, while
-Lemma~\ref{lem:vel} keeps it bounded. The bound in (\ref{eq:app_c}) is looser by
-$(1-\mu)^{-2}$ as a result; this is the price of a guarantee that describes an
-optimiser that unlearns.
-
-\subsection{Remarks on Scope and Exactness}
-
-\begin{remark}[Mini-batch scope]\label{rem:minibatch}
-$\gr^{(t)}$ is the gradient of the retain objective on the \emph{sampled} retain
-mini-batch, so (\ref{eq:app_c}) is exact for that mini-batch's objective---which
-is the quantity \ours{} projects against, and therefore the quantity about which
-a per-step statement can be made. Because mini-batch gradients are unbiased
-estimates of the population gradient, the first-order term is non-positive in
-expectation up to the standard SGD gradient-variance term; a population-exact
-per-step guarantee would require the full retain gradient at every step, at
-$O(|\Dr|)$ cost per update. We regard this as the principal formal limitation
-(\S\ref{sec:limitations}).
-\end{remark}
-
-\begin{remark}[Degenerate retain gradient]\label{rem:degenerate}
-The implementation skips the projection when $\|\gr\|^2 < 10^{-12}$, since
-(\ref{eq:app_proj}) is then numerically ill-posed. In that regime the violation
-of (\ref{eq:app_a}) is bounded by Cauchy--Schwarz:
-$|\langle u_t,\gr\rangle| \le \|u_t\|\|\gr\| \le 10^{-6}c/(1-\mu)$, giving a
-first-order retain increase of at most $10^{-5}\eta$. Moreover such a $\gr$
-means the retain mini-batch is already at a stationary point. The exception is
-therefore quantitatively negligible, but we state it rather than suppress it.
-\end{remark}
-
-\begin{remark}[Floating-point exactness]\label{rem:float}
-In exact arithmetic $\langle \Pi_g(v),g\rangle = 0$ identically. In float32, the
-inner products are sums over $1.12\times10^7$ parameters, with accumulation
-error of order $\sqrt{n}\,\varepsilon_{32} \approx 4\times10^{-4}$ relative.
-The measured worst-case relative violation is $-7.4\times10^{-7}$
-(\S\ref{sec:alignment}), three orders of magnitude \emph{below} that scale and
-with positive mean, consistent with rounding rather than a systematic defect. We
-therefore state Theorem~\ref{thm:app_main} as holding to float32 precision, and
-recommend float64 accumulation for the inner products in
-(\ref{eq:app_proj}) in reference implementations.
-\end{remark}
-
-% ------------------------------------------------------------
-\section{Proof of Theorem~\ref{thm:separation}}\label{app:thm2}
-
-\begin{theorem}[Theorem~\ref{thm:separation}, restated]\label{thm:app_sep}
-Fix $\theta_0$ with retain gradient $\gr := \nabla\Lrt(\theta_0) \ne 0$ and
-forget gradient $\gf$. Consider one-step update operators. Then:
-\begin{enumerate}
-\item[(i)] \textbf{GA.} The update $\theta_0 + \eta\gf$ strictly increases
-$\Lrt$ to first order whenever $\langle \gf,\gr\rangle > 0$.
-\item[(ii)] \textbf{SCRUB.} For any fixed $\lambda>0$ there exist $\gf,\gr$ with
-$\langle -\gf+\lambda\gr,\;\gr\rangle < 0$.
-\item[(iii)] \textbf{SalUn.} The masked random-label update
-$-M\odot\nabla\CE_{\mathrm{RL}}$ has unconstrained sign with respect to $\gr$.
-\item[(iv)] \textbf{Soft conflict regularisers.} Penalising negative alignment
-does not preclude it.
-\item[(v)] \textbf{\ours{}.} $\langle u_t,\gr\rangle \ge 0$ unconditionally.
-\end{enumerate}
-\end{theorem}
-
-\begin{proof}
-(i) A first-order expansion gives
-$\Lrt(\theta_0+\eta\gf) = \Lrt(\theta_0) + \eta\langle \gf,\gr\rangle + O(\eta^2)$,
-which exceeds $\Lrt(\theta_0)$ for small $\eta>0$ when
-$\langle\gf,\gr\rangle>0$. Since GA constrains neither the sign nor the
-magnitude of $\langle\gf,\gr\rangle$, no configuration-independent per-step
-guarantee is available.
-
-(ii) Compute
-$\langle -\gf+\lambda\gr,\;\gr\rangle = -\langle\gf,\gr\rangle+\lambda\|\gr\|^2$.
-This is negative precisely when
-$\langle\gf,\gr\rangle > \lambda\|\gr\|^2$. Such a pair exists for any fixed
-$\lambda$: e.g.\ in $\mathbb{R}^2$ take $\gr=(1,0)$ and
-$\gf = (\lambda+1)\,(1,0)$, giving
-$\langle\gf,\gr\rangle = \lambda+1 > \lambda = \lambda\|\gr\|^2$. Because
-$\lambda$ is a fixed hyperparameter while $\langle\gf,\gr\rangle/\|\gr\|^2$
-varies along the trajectory, no fixed $\lambda$ certifies every step.
-
-(iii) With random labels the masked gradient direction is uncorrelated with
-$\gr$ in expectation; individual draws therefore realise either sign of
-$\langle g_{\mathrm{SalUn}},\gr\rangle$, and the mask $M$ (selected by gradient
-magnitude, not by retain alignment) imposes no constraint on it.
-
-(iv) A regulariser adding $\rho\,\phi(\langle g,\gr\rangle)$ to the objective
-with $\phi$ decreasing shifts the optimum toward positive alignment but leaves
-the feasible set unrestricted: for any finite penalty weight $\rho$, a
-sufficiently large forget-loss reduction makes a step with
-$\langle g,\gr\rangle<0$ preferable. Only a hard constraint---i.e.\ a projection
-onto $\{u:\langle u,\gr\rangle\ge0\}$---renders such steps unreachable.
-
-(v) Theorem~\ref{thm:app_main}(a).
-\end{proof}
-
-\begin{remark}
-Theorem~\ref{thm:app_sep} is a \emph{worst-case} separation: it exhibits
-configurations in which the baselines strictly degrade the retain objective in a
-single step, not a claim that they typically do. In practice all these methods
-often produce small retain-loss changes. The distinction the theorem draws is
-between behaviour that is empirically usual and behaviour that is guaranteed by
-construction; only the latter is checkable without running the method.
-\end{remark}
-
-% ------------------------------------------------------------
 \section{Per-Class Results}\label{app:perclass}
 
 The main text reports per-dataset aggregates (Table~\ref{tab:cross}). Because a
@@ -2796,11 +2872,11 @@ class~0 the two made identical stopping decisions (\S\ref{sec:bn_robust}).
 
 \begin{table}[t]
 \centering\color{revised}
-\caption{\textbf{BN-robust \ours{} per class} (CIFAR-10, seed~$42$). The
+\caption{\added{\textbf{BN-robust \ours{} per class} (CIFAR-10, seed~$42$). The
 frozen-statistics configuration is recovered on every class. BN-robust is not,
 under either stopping rule, and with calibrated stopping every class ships within
 three standard errors of chance ($11.3\%$). Epochs ``$25{\to}22$'': the run
-reached the cap and its best epoch was shipped.}
+reached the cap and its best epoch was shipped.}}
 \label{tab:app_bnrobust}
 \small
 \setlength{\tabcolsep}{4pt}
@@ -2830,11 +2906,11 @@ Mean & $5.42$ & $97.47$ & $11.52$ & $11.52$ & $9.04$ & $9.04$ & --- & $84.45$ & 
 \begin{figure}[t]
 \centering\color{revised}
 \includegraphics[width=\textwidth]{fig_bnrobust_perclass.png}
-\caption{\textbf{BN-robust on all ten CIFAR-10 classes} (seed~$42$; the data of
+\caption{\added{\textbf{BN-robust on all ten CIFAR-10 classes} (seed~$42$; the data of
 Table~\ref{tab:app_bnrobust}). (a)~Under the attack, the frozen-statistics
 configuration is recovered on every class and BN-robust on none. (b)~Where
 BN-robust ships: with naive stopping (open) five classes land above chance
-$+\,3$\,SE; with calibrated stopping (filled), none do.}
+$+\,3$\,SE; with calibrated stopping (filled), none do.}}
 \label{fig:app_bnrobust}
 \end{figure}
 \endgroup% ---- end of the added appendix subsection

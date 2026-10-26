@@ -70,7 +70,7 @@ def style(ax):
 
 # --------------------------------------------------------------------------
 def mechanism():
-    """Two lanes: frozen statistics (the deployed PURGE) and BN-robust."""
+    """Two lanes: frozen statistics (the deployed EXCISE) and BN-robust."""
     frozen = attack_rows("bn_robust_phase19_3seeds.csv", "off_")
     robust = attack_rows("bn_robust_phase30_capped_check.csv", "calcap_")
 
@@ -89,11 +89,11 @@ def mechanism():
                                      shrinkA=1, shrinkB=1, zorder=1))
 
     for y, name, ec, fc, step, ships, after, verdict in [
-        (29, "PURGE, frozen statistics", RED, "#fdeeea",
+        (29, "EXCISE, frozen statistics", RED, "#fdeeea",
          "every step: update $\\theta$;\n$\\phi$ stays at $\\phi_0$",
          f"ships $\\theta_T$ with $\\phi_0$\nFA {mean(frozen, 0):.1f}%",
          f"FA {mean(frozen, 1):.1f}%", "the forgetting\nwas in the mismatch"),
-        (6, "BN-robust PURGE", BLUE, "#e8f0f8",
+        (6, "BN-robust EXCISE", BLUE, "#e8f0f8",
          "every step: $\\phi\\leftarrow R(\\theta_t, B_r)$,\nthen update $\\theta$",
          f"ships $\\theta_T$ with $R(\\theta_T,\\mathcal{{D}}_r)$\nFA {mean(robust, 0):.1f}%",
          f"FA {mean(robust, 1):.1f}%", "nothing left\nto recover"),
@@ -125,13 +125,13 @@ def attack():
     rows = [  # (group, label, colour, pre/post rows)
         ("CIFAR-10", "base model (no unlearning)", GREY,
          attack_rows("bn_robust_phase25_base_control_retain.csv", "base")),
-        ("CIFAR-10", "PURGE, frozen statistics", RED,
+        ("CIFAR-10", "EXCISE, frozen statistics", RED,
          attack_rows("bn_robust_phase19_3seeds.csv", "off_")),
         ("CIFAR-10", "BN-robust, naive stopping", AMBER,
          attack_rows("bn_robust_phase21_512imgs_persistent.csv", "exact512p_")),
         ("CIFAR-10", "BN-robust, calibrated stopping", BLUE,
          attack_rows("bn_robust_phase30_capped_check.csv", "calcap_")),
-        ("MNIST", "PURGE, frozen statistics", RED,
+        ("MNIST", "EXCISE, frozen statistics", RED,
          attack_rows("bn_robust_phase29_mnist.csv", "off_")),
         ("MNIST", "BN-robust, calibrated stopping", BLUE,
          attack_rows("bn_robust_phase29_mnist.csv", "robust_")),
@@ -181,7 +181,7 @@ def attack():
             r = attack_rows(f"bn_robust_phase24_recal_{s}.csv", "exact512p_")
         frozen.append(mean(f, 1)); robust.append(mean(r, 1))
     xs = range(len(sets)); w = 0.36
-    for dx, vals, c, lab in [(-w / 2, frozen, RED, "PURGE, frozen statistics"),
+    for dx, vals, c, lab in [(-w / 2, frozen, RED, "EXCISE, frozen statistics"),
                              (w / 2, robust, BLUE, "BN-robust (naive stop)")]:
         bars = a2.bar([x + dx for x in xs], vals, w, color=c, edgecolor="white", label=lab)
         for b, v in zip(bars, vals):
@@ -277,7 +277,7 @@ def perclass():
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(8.8, 3.5), gridspec_kw=dict(wspace=0.28))
     w = 0.38
     a1.bar([c - w / 2 for c in classes], [r[1] for r in frozen], w, color=RED,
-           edgecolor="white", label="PURGE, frozen statistics")
+           edgecolor="white", label="EXCISE, frozen statistics")
     a1.bar([c + w / 2 for c in classes], [r[1] for r in cal], w, color=BLUE,
            edgecolor="white", label="BN-robust, calibrated stopping")
     a1.axhline(CHANCE, color="k", lw=1.1)

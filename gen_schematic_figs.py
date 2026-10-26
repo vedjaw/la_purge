@@ -138,7 +138,7 @@ def pipeline():
     link(75, 24, 79, 24)
     link(89, 20, 89, 12, BLUE); link(89, 12, 77, 12, BLUE)
 
-    ax.text(50, 44.4, "PURGE: four ablation-supported components",
+    ax.text(50, 44.4, "EXCISE: four ablation-supported components",
             ha="center", fontsize=12)
     ax.text(89, 30.2, "$g_r$", ha="center", fontsize=9, color=GREEN)
     fig.tight_layout()
