@@ -25,8 +25,8 @@ If the prediction fails, the run reports that; nothing here assumes success.
 Stages
 ------
   1. retrain reference models (skipped if checkpoints exist)   [expensive]
-  2. arm A: PURGE with FA stopping        (the current default)
-  3. arm B: PURGE with KL stopping        (--fa_target -1 --kl_stop_patience N)
+  2. arm A: EXCISE with FA stopping        (the current default)
+  3. arm B: EXCISE with KL stopping        (--fa_target -1 --kl_stop_patience N)
   4. evaluate both arms against the references; emit the comparison
 
 Usage

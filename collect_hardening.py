@@ -188,7 +188,7 @@ def verdicts(buckets):
     if "momentum_datasets.csv" in buckets:
         rows = {r["run"]: r for r in buckets["momentum_datasets.csv"]}
         print("\nPHASE 14 — momentum x update rule, equal compute, on datasets")
-        print("           where mu=0 demonstrably breaks PURGE")
+        print("           where mu=0 demonstrably breaks EXCISE")
         for ds, chance in (("mnist", 10.0), ("svhn", 10.0)):
             print(f"    {ds.upper()}  (chance {chance}%)")
             print(f"      {'rule':<12}{'FA mu=0.9':>11}{'FA mu=0':>10}{'change':>10}")
@@ -205,7 +205,7 @@ def verdicts(buckets):
     for csvname, title, note in (
             ("crossmethod_sample.csv",
              "PHASE 15 - sample-level forgetting across methods (CIFAR-10, 1%)",
-             "PURGE reference (Phase 7, fixed budget): TA 71.87  FA 58.40  RA 73.19.\n"
+             "EXCISE reference (Phase 7, fixed budget): TA 71.87  FA 58.40  RA 73.19.\n"
              "    A method that leaves FA ~ TA with RA intact has succeeded here;\n"
              "    FA far below TA, or RA collapsing, is failure in either direction."),
             ("crossmethod_cifar100.csv",

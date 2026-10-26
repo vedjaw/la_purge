@@ -1,6 +1,6 @@
 """
-3-seed multi-dataset runner for PURGE.
-Runs PURGE on all datasets with seeds {42, 123, 456} and reports mean +/- std.
+3-seed multi-dataset runner for EXCISE.
+Runs EXCISE on all datasets with seeds {42, 123, 456} and reports mean +/- std.
 """
 import argparse
 import csv

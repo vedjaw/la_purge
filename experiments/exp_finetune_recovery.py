@@ -1,5 +1,5 @@
 """
-Fine-tuning recovery attack: after PURGE unlearning, fine-tune on a small
+Fine-tuning recovery attack: after EXCISE unlearning, fine-tune on a small
 subset of forget-class samples and measure how quickly FA recovers.
 
 Tests durability of forgetting (related to Finding 8.4).
@@ -27,7 +27,7 @@ def main():
     ap.add_argument("--dataset", default="cifar10")
     ap.add_argument("--forget_class", type=int, default=0)
     ap.add_argument("--checkpoint", required=True,
-                    help="Path to the PURGE-unlearned checkpoint")
+                    help="Path to the EXCISE-unlearned checkpoint")
     ap.add_argument("--data_dir", default=str(ROOT / "data"))
     ap.add_argument("--out_dir", default=str(ROOT / "results/finetune_recovery"))
     ap.add_argument("--n_samples", type=int, default=50,

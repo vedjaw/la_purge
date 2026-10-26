@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ###############################################################################
-# PURGE — Master Experiment Runner
+# EXCISE — Master Experiment Runner
 #
 # Runs all experiments needed for the paper revision in the correct order.
 # Transfer the entire la_purge/ directory to the GPU server, then run:
@@ -52,7 +52,7 @@ if [ "$FORCE_TRAINING" = true ]; then
 fi
 
 echo "============================================================"
-echo " PURGE Experiment Suite"
+echo " EXCISE Experiment Suite"
 echo "  Data:        $DATA_DIR"
 echo "  Checkpoints: $CKPT_DIR"
 echo "  Results:     $RESULTS_DIR"
@@ -128,7 +128,7 @@ fi
 ###############################################################################
 echo ""
 echo "============================================================"
-echo " PHASE 1: 3-Seed Multi-Dataset PURGE Runs"
+echo " PHASE 1: 3-Seed Multi-Dataset EXCISE Runs"
 echo "============================================================"
 if [ "$QUICK" = true ]; then
     python experiments/exp_multiseed_all.py \
@@ -209,17 +209,17 @@ echo ""
 echo "============================================================"
 echo " PHASE 5: Fine-Tuning Recovery Attack"
 echo "============================================================"
-# Find the PURGE checkpoint from Phase 1 (seed 42)
-PURGE_CKPT=$(find "$RESULTS_DIR/multiseed/cifar10_c0_s42" -name "purge_*.pth" 2>/dev/null | head -1)
-if [ -n "$PURGE_CKPT" ]; then
+# Find the EXCISE checkpoint from Phase 1 (seed 42)
+EXCISE_CKPT=$(find "$RESULTS_DIR/multiseed/cifar10_c0_s42" -name "purge_*.pth" 2>/dev/null | head -1)
+if [ -n "$EXCISE_CKPT" ]; then
     python experiments/exp_finetune_recovery.py \
         --dataset cifar10 --forget_class 0 \
-        --checkpoint "$PURGE_CKPT" \
+        --checkpoint "$EXCISE_CKPT" \
         --data_dir "$DATA_DIR" \
         --out_dir "$RESULTS_DIR/finetune_recovery" \
         --n_samples 50 --ft_epochs 10 --seed 42
 else
-    echo "  [SKIP] No PURGE checkpoint found. Run Phase 1 first."
+    echo "  [SKIP] No EXCISE checkpoint found. Run Phase 1 first."
 fi
 
 ###############################################################################
@@ -273,14 +273,14 @@ echo ""
 echo "============================================================"
 echo " PHASE 9: BN Recalibration (corrected normalisation)"
 echo "============================================================"
-if [ -n "$PURGE_CKPT" ]; then
+if [ -n "$EXCISE_CKPT" ]; then
     python experiments/bn_recalibration.py \
-        --checkpoints "purge:$PURGE_CKPT" \
+        --checkpoints "purge:$EXCISE_CKPT" \
         --data_dir "$DATA_DIR" \
         --forget_class 0 \
         --out_csv "$RESULTS_DIR/bn_recalibration_corrected.csv"
 else
-    echo "  [SKIP] No PURGE checkpoint found. Run Phase 1 first."
+    echo "  [SKIP] No EXCISE checkpoint found. Run Phase 1 first."
 fi
 
 ###############################################################################
@@ -290,14 +290,14 @@ echo ""
 echo "============================================================"
 echo " PHASE 10: Linear Probe (representation leakage)"
 echo "============================================================"
-if [ -n "$PURGE_CKPT" ]; then
+if [ -n "$EXCISE_CKPT" ]; then
     python experiments/linear_probe.py \
         --checkpoints \
             "base:$CKPT_DIR/base_cifar10_resnet18.pth" \
-            "purge:$PURGE_CKPT" \
+            "purge:$EXCISE_CKPT" \
         --data_dir "$DATA_DIR" --forget_class 0
 else
-    echo "  [SKIP] No PURGE checkpoint. Run Phase 1 first."
+    echo "  [SKIP] No EXCISE checkpoint. Run Phase 1 first."
 fi
 
 ###############################################################################

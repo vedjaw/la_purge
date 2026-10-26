@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# PURGE — reviewer-hardening experiments
+# EXCISE — reviewer-hardening experiments
 #
 # Everything here targets a WEAKNESS A TMLR REVIEWER WILL FIND, not new claims.
 # Phases are ordered by (value / cost). Runs strictly sequentially: the earlier
@@ -11,7 +11,7 @@
 #   Phase 3  random-subset forget   ~20 min   answers "class-only?" (exploratory)
 #   Phase 4  second architecture    ~60 min   answers "ResNet-18-only?"
 #   Phase 5  MIA ref, 2nd dataset   ~50 min   generalises the headline finding
-#   Phase 6  PURGE vs that ref       ~35 min   completes the protocol argument
+#   Phase 6  EXCISE vs that ref       ~35 min   completes the protocol argument
 #   Phase 7  sample-level, fixed     ~20 min   retries a misconfigured phase
 #   Phase 8  table-grade reruns      ~2 h      lets Table 1 rows be replaced
 #   Phase 9  BN attack, canonical    ~15 min   prof's attack, exact operator
@@ -134,7 +134,7 @@ fi
 # PHASE 4 — is the result ResNet-18-specific?
 #
 # Every number in the paper is one architecture. run.py already supports
-# resnet50 and vgg16. One dataset x two architectures x {PURGE, -projection} is
+# resnet50 and vgg16. One dataset x two architectures x {EXCISE, -projection} is
 # enough to answer the question; VGG-16 is the more informative of the two
 # because it has no residual connections and no BN, so it also probes whether
 # the BN-recalibration story is architecture-bound.
@@ -200,18 +200,18 @@ ls -la "$OUT" 2>/dev/null
 #
 # Phase 5 established the REFERENCE point on a second dataset: a retrained
 # PathMNIST model scores AUROC 0.705 on the loss attack, not 0.5. What it did
-# not do is show where PURGE lands relative to that reference, because no
+# not do is show where EXCISE lands relative to that reference, because no
 # unlearned PathMNIST checkpoint existed -- only base and retrained.
 #
-# That comparison is the actual argument. On CIFAR-10, PURGE scores 0.693 vs a
+# That comparison is the actual argument. On CIFAR-10, EXCISE scores 0.693 vs a
 # reference of 0.694 (a near-exact match) while SalUn scores 0.500 -- which
 # looks perfect against the conventional "0.5 is ideal" reading but is in fact
-# 0.19 further from the retrained model than PURGE is. Replicating that on a
+# 0.19 further from the retrained model than EXCISE is. Replicating that on a
 # second dataset is what turns a CIFAR-10 curiosity into a claim about the
 # protocol. References for c0/c2/c3/c4 already exist, so this is cheap.
 # -----------------------------------------------------------------------------
 if want 6; then
-banner "PHASE 6 — PURGE vs retrained reference on PathMNIST"
+banner "PHASE 6 — EXCISE vs retrained reference on PathMNIST"
 for C in 0 2 3 4; do
   REF="$CKPT/retrain_pathmnist_c${C}.pth"
   [[ -f "$REF" ]] || { echo "--- SKIP c$C: no reference at $REF"; continue; }
@@ -322,7 +322,7 @@ fi
 # -----------------------------------------------------------------------------
 # PHASE 9 — the BN-recalibration attack, canonical operator
 #
-# We already run this attack (S5.4: PURGE-BN dF = +92.2pp, PURGE-GN dF = 0.00),
+# We already run this attack (S5.4: EXCISE-BN dF = +92.2pp, EXCISE-GN dF = 0.00),
 # but with a weaker operator: BN train mode + forward passes, so the statistics
 # were an EMA that still carried some of the pre-attack buffers and depended on
 # batch ordering. The canonical operator is torch.optim.swa_utils.update_bn,
@@ -336,7 +336,7 @@ fi
 # recalibrating and the result is meaningless.
 #
 # The baselines are included deliberately. Our paper reports the vulnerability as
-# PURGE-specific on the strength of OUR reproductions (SalUn 0.0, BadTeacher
+# EXCISE-specific on the strength of OUR reproductions (SalUn 0.0, BadTeacher
 # -0.5, SCRUB -4.4). The attack's own authors report SalUn +77.9pp and
 # BadTeacher +98.7pp. Both can hold, because vulnerability depends on whether a
 # method's BN buffers were updated during unlearning -- but our claim is then
@@ -380,7 +380,7 @@ fi
 #      ResNet-50 would -- different family, different inductive bias.
 #   2. ViT normalises with LayerNorm, which keeps NO running statistics. So it
 #      is structurally outside the reach of the BN-recalibration attack, exactly
-#      as the GroupNorm backbone is. Phase 9 showed PURGE-BN is fully reversible
+#      as the GroupNorm backbone is. Phase 9 showed EXCISE-BN is fully reversible
 #      (dF = +97.96pp); a second BN-free architecture that unlearns properly
 #      turns "we swapped the norm layer" into a general statement about which
 #      normalisation schemes admit the attack at all.
@@ -436,11 +436,11 @@ fi
 fi
 
 # -----------------------------------------------------------------------------
-# PHASE 12 — is the momentum dependence PURGE-specific? (reviewer comment)
+# PHASE 12 — is the momentum dependence EXCISE-specific? (reviewer comment)
 #
-# The paper reports that removing momentum breaks PURGE's forgetting on 5 of 6
+# The paper reports that removing momentum breaks EXCISE's forgetting on 5 of 6
 # datasets, and a reviewer asked the obvious follow-up: is that a property of
-# PURGE, or of gradient-based unlearning generally? We answer it INSIDE our own
+# EXCISE, or of gradient-based unlearning generally? We answer it INSIDE our own
 # codebase rather than across four baseline repos, because a cross-repo
 # comparison would confound the momentum change with every other difference in
 # their optimisers, schedules and stopping rules.
@@ -502,16 +502,16 @@ trap restore_baselines EXIT INT TERM
 for d in "${BASE_DIRS[@]}"; do
   if [[ ! -f "$d/run.py" ]]; then echo "--- SKIP $d (no run.py)"; continue; fi
   cp -f "$d/run.py" "$d/run.py.mombak"
-  # momentum=0.9 -> momentum=float(os.environ.get("PURGE_MU","0.9"))
-  perl -pi -e 's/momentum=0\.9/momentum=float(__import__("os").environ.get("PURGE_MU","0.9"))/g' "$d/run.py"
-  echo "    patched $d/run.py ($(grep -c PURGE_MU "$d/run.py") sites)"
+  # momentum=0.9 -> momentum=float(os.environ.get("EXCISE_MU","0.9"))
+  perl -pi -e 's/momentum=0\.9/momentum=float(__import__("os").environ.get("EXCISE_MU","0.9"))/g' "$d/run.py"
+  echo "    patched $d/run.py ($(grep -c EXCISE_MU "$d/run.py") sites)"
 done
 for MU in 0.0 0.9; do
   TAG=$(echo "$MU" | tr -d .)
   for d in "${BASE_DIRS[@]}"; do
     [[ -f "$d/run.py" ]] || continue
     nm=$(basename "$d")
-    ( cd "$d" && PURGE_MU="$MU" $PY run.py --dataset cifar10 --forget_class 0 \
+    ( cd "$d" && EXCISE_MU="$MU" $PY run.py --dataset cifar10 --forget_class 0 \
         --data_dir ./data 2>&1 ) > "$LOG/mombase_${nm}_mu${TAG}.log" 2>&1 \
       && echo "--- mombase_${nm}_mu${TAG}  ok" \
       || { echo "--- mombase_${nm}_mu${TAG}  FAILED"; tail -n 6 "$LOG/mombase_${nm}_mu${TAG}.log" | sed 's/^/      /'; }
@@ -525,10 +525,10 @@ fi
 # PHASE 14 — momentum across update rules, on the datasets where it MATTERS
 #
 # Phase 12 asked the reviewer's question ("does removing momentum break other
-# methods, or only PURGE?") but answered it on CIFAR-10 -- which Table 5 shows is
-# the single dataset where mu=0 does NOT break PURGE (FA 5.8% against a 10%
+# methods, or only EXCISE?") but answered it on CIFAR-10 -- which Table 5 shows is
+# the single dataset where mu=0 does NOT break EXCISE (FA 5.8% against a 10%
 # chance level). The runs were correct and reproduced that row (2.14 -> 5.54),
-# but they cannot separate the hypotheses, because there is no PURGE failure on
+# but they cannot separate the hypotheses, because there is no EXCISE failure on
 # CIFAR-10 to compare against.
 #
 # Two design faults, both fixed here:
@@ -576,9 +576,9 @@ fi
 # setting, not a weakness of one method. Our two remaining negative results are
 # reported against nothing, which makes them read as our defects:
 #
-#   sample-level forgetting  PURGE reaches FA 58.4% only by wrecking the model
+#   sample-level forgetting  EXCISE reaches FA 58.4% only by wrecking the model
 #                            (RA 100 -> 73.2). Untested for any baseline.
-#   CIFAR-100                PURGE needs 60 epochs to reach 1.27%. No baseline
+#   CIFAR-100                EXCISE needs 60 epochs to reach 1.27%. No baseline
 #                            comparison exists at all -- Table 3 is CIFAR-10 only.
 #
 # IMPORTANT SCOPE NOTE. Of the 16 baseline directories on the box, only four are
@@ -631,9 +631,9 @@ run "x16_purge" $PY run.py --config configs/cifar100_kl_retain.yaml \
 fi
 
 # -----------------------------------------------------------------------------
-# PHASE 17 — BN-robust PURGE: does keeping phi tracking theta survive the attack?
+# PHASE 17 — BN-robust EXCISE: does keeping phi tracking theta survive the attack?
 #
-# PURGE freezes BN statistics at phi_0 while theta adapts against
+# EXCISE freezes BN statistics at phi_0 while theta adapts against
 # them, so the final weights are valid only for statistics an attacker can
 # replace: phi <- R(theta_T, D_r) recovers FA from 1.4% to 99.7% (S5.4). The fix
 # is to stop letting phi go stale.
@@ -656,7 +656,7 @@ fi
 # surfaced that rather than fixed it. That is the result to look at.
 # -----------------------------------------------------------------------------
 if want 17; then
-banner "PHASE 17 — BN-robust PURGE (off / exact / ema / groupnorm)"
+banner "PHASE 17 — BN-robust EXCISE (off / exact / ema / groupnorm)"
 B10=$CKPT/base_cifar10_resnet18.pth
 for MODE in off exact ema; do
   SD="$CKPT/bnrobust_$MODE"; mkdir -p "$SD"
@@ -692,7 +692,7 @@ fi
 fi
 
 # -----------------------------------------------------------------------------
-# PHASE 18 — BN-robust PURGE, second pass
+# PHASE 18 — BN-robust EXCISE, second pass
 #
 # Phase 17 established that the idea works: in-loop recalibration cuts the
 # attack's recovery from +98.4pp to +6.7pp while holding test accuracy
@@ -744,14 +744,14 @@ fi
 fi
 
 # -----------------------------------------------------------------------------
-# PHASE 19 — BN-robust PURGE, three seeds, plus a cheaper recalibration schedule
+# PHASE 19 — BN-robust EXCISE, three seeds, plus a cheaper recalibration schedule
 #
 # Phases 17/18 established on one seed that recalibrating BN inside the loop
 # makes forgetting survive the attack: forget accuracy under the attacker's own
-# statistics R(theta, D_r) was 99.2% for current PURGE and 10.3-13.0% for the
+# statistics R(theta, D_r) was 99.2% for current EXCISE and 10.3-13.0% for the
 # exact variant (chance 10%). This phase makes that table-grade and tests cost:
 #
-#   off      current PURGE (phi frozen)                        the control
+#   off      current EXCISE (phi frozen)                        the control
 #   exact    phi <- R(theta, D_r) before EVERY step            the proposal
 #   exact5   the same, but only every 5th step                 ~5x fewer recals
 #
@@ -769,7 +769,7 @@ fi
 # construction.
 # -----------------------------------------------------------------------------
 if want 19; then
-banner "PHASE 19 — BN-robust PURGE: 3 seeds x {off, exact, exact every 5th step}"
+banner "PHASE 19 — BN-robust EXCISE: 3 seeds x {off, exact, exact every 5th step}"
 B10=$CKPT/base_cifar10_resnet18.pth
 for SEED in 42 123 456; do
   for MODE in off exact exact5; do
@@ -799,7 +799,7 @@ fi
 fi
 
 # -----------------------------------------------------------------------------
-# PHASE 20 — BN-robust PURGE, every step, on fewer recalibration images
+# PHASE 20 — BN-robust EXCISE, every step, on fewer recalibration images
 #
 # Phase 19 (3 seeds) showed the cost lever matters: recalibrating only every
 # 5th step lets phi drift between recalibrations, and that staleness is exactly
@@ -816,7 +816,7 @@ fi
 # arms are the references and are not rerun.
 # -----------------------------------------------------------------------------
 if want 20; then
-banner "PHASE 20 — BN-robust PURGE, every step, 512 recalibration images, 3 seeds"
+banner "PHASE 20 — BN-robust EXCISE, every step, 512 recalibration images, 3 seeds"
 B10=$CKPT/base_cifar10_resnet18.pth
 CK=()
 for SEED in 42 123 456; do
@@ -836,7 +836,7 @@ fi
 fi
 
 # -----------------------------------------------------------------------------
-# PHASE 21 — BN-robust PURGE with the persistent recalibration loader
+# PHASE 21 — BN-robust EXCISE with the persistent recalibration loader
 #
 # Identical to Phase 20 (exact, every step, 512 images, same seeds, same base)
 # except --bn_recal_persistent. Phase 20 measured ~0.67 s of FIXED cost per
@@ -849,7 +849,7 @@ fi
 #   - runtime should fall from ~18 min toward ~13 min
 # -----------------------------------------------------------------------------
 if want 21; then
-banner "PHASE 21 — BN-robust PURGE, 512 images, persistent recalibration loader, 3 seeds"
+banner "PHASE 21 — BN-robust EXCISE, 512 images, persistent recalibration loader, 3 seeds"
 B10=$CKPT/base_cifar10_resnet18.pth
 CK=()
 for SEED in 42 123 456; do
@@ -871,9 +871,9 @@ fi
 # -----------------------------------------------------------------------------
 # PHASE 22 — the GroupNorm arm of the three-way comparison
 #
-# The comparison is PURGE-BN (current) -> PURGE-GN (fallback) -> BN-robust PURGE.
+# The comparison is EXCISE-BN (current) -> EXCISE-GN (fallback) -> BN-robust EXCISE.
 # The first and third exist on this cluster; GN does not, because its base
-# model was lost with the old server. This phase rebuilds it and runs PURGE-GN
+# model was lost with the old server. This phase rebuilds it and runs EXCISE-GN
 # on the same three seeds as Phases 19-21.
 #
 # Base training follows experiments/train_groupnorm_base.py from scratch (GN
@@ -887,7 +887,7 @@ fi
 # as such rather than as robustness.
 # -----------------------------------------------------------------------------
 if want 22; then
-banner "PHASE 22 — GroupNorm base (100 epochs) + PURGE-GN x 3 seeds"
+banner "PHASE 22 — GroupNorm base (100 epochs) + EXCISE-GN x 3 seeds"
 BGN=$CKPT/base_cifar10_resnet18_groupnorm.pth
 if [[ ! -f "$BGN" ]]; then
   run "gn_base_train" $PY experiments/train_groupnorm_base.py \
@@ -907,12 +907,12 @@ if [[ -f "$BGN" ]]; then
       --dataset cifar10 --forget_class 0 --data_dir ./data \
       --checkpoints "${CK[@]}" --out_csv "$OUT/bn_robust6_gn.csv"
 else
-  echo "--- GN base was not produced; skipping PURGE-GN"
+  echo "--- GN base was not produced; skipping EXCISE-GN"
 fi
 fi
 
 # -----------------------------------------------------------------------------
-# PHASE 23 — does BN-robust PURGE generalise across classes?
+# PHASE 23 — does BN-robust EXCISE generalise across classes?
 #
 # Every BN-robust result so far forgets CIFAR-10 class 0. The paper already
 # makes all-class claims for MNIST and PathMNIST, so "only class 0?" is the
@@ -921,7 +921,7 @@ fi
 # Phases 19-21), one seed each, with the current method as the per-class
 # control: the vulnerability itself has to be shown on each class too.
 #
-#   off        current PURGE                         expected: attack recovers
+#   off        current EXCISE                         expected: attack recovers
 #   exact512   BN-robust, every step, 512 images     expected: stays forgotten
 #
 # BN_PERSIST=1 (default) adds --bn_recal_persistent; set BN_PERSIST=0 to fall
@@ -952,12 +952,12 @@ fi
 # -----------------------------------------------------------------------------
 # PHASE 24 — the attacker recalibrates on data of its own choosing
 #
-# BN-robust PURGE recalibrates on the retain set while it unlearns, and every
+# BN-robust EXCISE recalibrates on the retain set while it unlearns, and every
 # attack so far (Phases 17-21) recalibrated on that same set. An attacker is not
 # bound to it. This re-attacks existing checkpoints with statistics from the full
 # training set (forget class included) and from the held-out test set (every
 # class). No training -- only the attack, so it is cheap.
-#   off        plain PURGE                            (Phase 19, 3 seeds)
+#   off        plain EXCISE                            (Phase 19, 3 seeds)
 #   exact      BN-robust, every step, 2048 images     (Phase 19, 3 seeds)
 #   exact512p  BN-robust, every step, 512, persistent (Phase 21, 3 seeds)
 # -----------------------------------------------------------------------------
@@ -1009,7 +1009,7 @@ fi
 # under the last in-loop statistics (512 augmented retain images, one step
 # stale) on augmented forget images. The model ships with phi <- R(theta_T, D_r)
 # on deterministic transforms, and there FA reads 1.6-3.6pp higher: 9.2-12.6%
-# instead of <= 10%. Plain PURGE has no such gap (its phi never changes).
+# instead of <= 10%. Plain EXCISE has no such gap (its phi never changes).
 # --bn_calibrated_stop measures the stopping FA under the shipped statistics,
 # so the shipped FA meets the target. Same setting as Phase 21 otherwise,
 # except the epoch cap: 25 instead of the config's 15. Near the target
@@ -1046,7 +1046,7 @@ fi
 # Phase 23 showed the in-loop vs shipped FA gap is class-dependent (-1.0 to
 # +9.0pp; classes 8 and 9 shipped at 16.7% and 15.4% after stopping at an
 # in-loop 10.0% and 6.4%). This reruns Phase 23's BN-robust arm with
-# --bn_calibrated_stop and the 25-epoch cap of Phase 26. The plain-PURGE arm is
+# --bn_calibrated_stop and the 25-epoch cap of Phase 26. The plain-EXCISE arm is
 # unchanged by the flag, so Phase 23's off_c<k> rows remain the control.
 # Largest-gap classes first, so the informative rows land early.
 # -----------------------------------------------------------------------------
@@ -1108,13 +1108,13 @@ fi
 # so it is retrained with the repo's own recipe (experiments/train_base_all.py:
 # ImageNet-pretrained ResNet-18, lr 0.01, early stop at 99% test accuracy) --
 # self-contained, like everything on this cluster. Forget class 0, 3 seeds:
-#   off      plain PURGE (configs/mnist_kl_retain.yaml)
+#   off      plain EXCISE (configs/mnist_kl_retain.yaml)
 #   robust   BN-robust as finally configured: exact every step on 512 images,
 #            persistent loader, calibrated stop, restore best epoch, cap 25
 # then the attack on all six checkpoints.
 # -----------------------------------------------------------------------------
 if want 29; then
-banner "PHASE 29 — MNIST: plain PURGE vs BN-robust (calibrated), 3 seeds"
+banner "PHASE 29 — MNIST: plain EXCISE vs BN-robust (calibrated), 3 seeds"
 BM=$CKPT/base_mnist_resnet18.pth
 if [[ ! -f "$BM" ]]; then
   run "mnist_base_train" $PY experiments/train_base_all.py --datasets mnist \

@@ -39,7 +39,7 @@
   % Keep tmlr's as \tmlrAND for author blocks and free the name.
   \let\tmlrAND\AND\let\AND\relax
 }{%
-  \PackageWarning{purge}{tmlr.sty not found -- using fallback layout.
+  \PackageWarning{excise}{tmlr.sty not found -- using fallback layout.
     Download tmlr.sty/tmlr.bst for the official format.}%
   \usepackage[margin=1in]{geometry}
   \usepackage{natbib}
@@ -71,7 +71,7 @@
 % --- Revision marking --------------------------------------------------------
 % Text added since the previous draft is set in orange so it can be found at a
 % glance. Build without it by defining \finalversion, e.g.
-%   pdflatex "\def\finalversion{}\input{purge_tmlr}"
+%   pdflatex "\def\finalversion{}\input{excise_tmlr}"
 % or set the colour below to {0,0,0}.
 \ifdefined\finalversion
   \definecolor{revised}{RGB}{0,0,0}
@@ -301,12 +301,12 @@ Appendix~\ref{app:method}).
 % ============================================================
 \section{The \ours{} Algorithm}\label{sec:method}
 
-Algorithm~\ref{alg:purge} gives the update. Each step computes a retain gradient
+Algorithm~\ref{alg:excise} gives the update. Each step computes a retain gradient
 $\gr$ on a retain mini-batch (cross-entropy plus the distillation anchor) and a
 forget gradient $\gf$ on a forget mini-batch.
 
 \begin{algorithm}[t]
-\caption{\ours{} unlearning (projected-momentum update)}\label{alg:purge}
+\caption{\ours{} unlearning (projected-momentum update)}\label{alg:excise}
 \begin{algorithmic}[1]
 \REQUIRE Trained model $\theta$, forget set $\Df$, retain set $\Dr$;
          lr $\eta$, momentum $\mu$, clip $c$, weight decay $\lambda_{\mathrm{wd}}$
@@ -364,7 +364,7 @@ than a safeguard, which has three consequences for how it must be applied.
 \emph{(i) Project the update, not the gradient.} \ours{} uses SGD with momentum
 $\mu$, weight decay and clipping $c$. The vector applied to the weights is the
 accumulated update, so we accumulate first and project afterwards
-(Algorithm~\ref{alg:purge}, lines 10--15); projecting $\gf$ instead leaves the
+(Algorithm~\ref{alg:excise}, lines 10--15); projecting $\gf$ instead leaves the
 applied update unconstrained (Proposition~\ref{prop:counter},
 Figure~\ref{fig:projorder}). \emph{(ii) Clip before accumulating.} Clipping the
 per-step ingredient keeps momentum's $1/(1-\mu)$ amplification and gives
@@ -425,7 +425,7 @@ the frozen base model stabilises retain behaviour.
 Let the composite retain objective on the sampled retain mini-batch,
 $\Lrt = \lossr + \beta\losskd$, be $L$-smooth, and let
 $\gr = \nabla_\theta\Lrt(\theta_t)$. Let \ours{} run the update of
-Algorithm~\ref{alg:purge}: $\|d_t\| \le c$ by clipping,
+Algorithm~\ref{alg:excise}: $\|d_t\| \le c$ by clipping,
 $v_t = \mu v_{t-1} + d_t$ with $v_{-1}=0$ and $\mu \in [0,1)$,
 $u_t = \Pi_{\gr}(v_t)\,\|v_t\|/\|\Pi_{\gr}(v_t)\|$ when
 $\langle v_t,\gr\rangle<0$ and $u_t = v_t$ otherwise, and
@@ -1014,7 +1014,7 @@ real, and all three matter empirically.
 \paragraph{(i) Project the update, not the gradient.}
 The vector applied to the weights is $u_t$, not $\gf$. We therefore
 momentum-accumulate first and project afterwards
-(Algorithm~\ref{alg:purge}, lines 10--15), so that
+(Algorithm~\ref{alg:excise}, lines 10--15), so that
 $\langle u_t,\gr\rangle \ge 0$ holds for the update that is actually applied.
 Projecting $\gf$ instead leaves $\langle u_t,\gr\rangle$ unconstrained.
 
@@ -1866,7 +1866,7 @@ the attack rather than outside its reach.}
 
 The diagnosis above points at its own remedy: if the weights learn to forget
 against statistics that are allowed to go stale, the statistics should never be
-stale. BN-robust \ours{} makes three changes to Algorithm~\ref{alg:purge}
+stale. BN-robust \ours{} makes three changes to Algorithm~\ref{alg:excise}
 (Figure~\ref{fig:bnrobust_mech}). It leaves the update rule, and so
 Theorem~\ref{thm:retain_safety}, untouched.
 \begin{enumerate}

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Recommended PURGE run: CIFAR-10 class 0, kl_retain objective.
+# Recommended EXCISE run: CIFAR-10 class 0, kl_retain objective.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

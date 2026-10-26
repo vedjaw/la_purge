@@ -43,17 +43,17 @@ phase(){
 
 [ -e "$BASE" ] || { log "FATAL missing $BASE"; exit 1; }
 
-# locate the PURGE CIFAR-10 checkpoint produced by run_remaining_todos.sh
-PURGE_CKPT="$(ls -t results/todo/purge_cifar10_bn/*.pth 2>/dev/null | head -1)"
-if [ -z "${PURGE_CKPT:-}" ]; then
-  log "WARN no PURGE CIFAR-10 checkpoint under results/todo/purge_cifar10_bn/;"
+# locate the EXCISE CIFAR-10 checkpoint produced by run_remaining_todos.sh
+EXCISE_CKPT="$(ls -t results/todo/purge_cifar10_bn/*.pth 2>/dev/null | head -1)"
+if [ -z "${EXCISE_CKPT:-}" ]; then
+  log "WARN no EXCISE CIFAR-10 checkpoint under results/todo/purge_cifar10_bn/;"
   log "     producing one now so C and D have something to evaluate."
   phase A0_purge_cifar10 "$PYTHON" -u run.py --config configs/cifar10_kl_retain.yaml \
       --checkpoint "$BASE" --data_dir "$DATA" \
       --save_dir results/todo/purge_cifar10_bn --seed 42
-  PURGE_CKPT="$(ls -t results/todo/purge_cifar10_bn/*.pth 2>/dev/null | head -1)"
+  EXCISE_CKPT="$(ls -t results/todo/purge_cifar10_bn/*.pth 2>/dev/null | head -1)"
 fi
-log "PURGE checkpoint: ${PURGE_CKPT:-NONE}"
+log "EXCISE checkpoint: ${EXCISE_CKPT:-NONE}"
 
 # ---- A. retrained CIFAR-10 reference ---------------------------------------
 # Trains on the retain set only, keeping all K heads. No absolute accuracy
@@ -79,7 +79,7 @@ fi
 
 # ---- C. MIA suite ----------------------------------------------------------
 MIA_ARGS=()
-[ -n "${PURGE_CKPT:-}" ] && MIA_ARGS+=("purge:$PURGE_CKPT")
+[ -n "${EXCISE_CKPT:-}" ] && MIA_ARGS+=("purge:$EXCISE_CKPT")
 [ -e "$SALUN" ] && MIA_ARGS+=("salun:$SALUN")
 [ -e "$BADT" ]  && MIA_ARGS+=("bad_teacher:$BADT")
 [ -e "$SCRUB" ] && MIA_ARGS+=("scrub:$SCRUB")
@@ -98,8 +98,8 @@ else
 fi
 
 # ---- D. distance to the retrained reference --------------------------------
-if [ -e "$REF" ] && [ -n "${PURGE_CKPT:-}" ]; then
-  D_ARGS=("purge:$PURGE_CKPT")
+if [ -e "$REF" ] && [ -n "${EXCISE_CKPT:-}" ]; then
+  D_ARGS=("purge:$EXCISE_CKPT")
   [ -e "$SALUN" ] && D_ARGS+=("salun:$SALUN")
   [ -e "$BADT" ]  && D_ARGS+=("bad_teacher:$BADT")
   [ -e "$SCRUB" ] && D_ARGS+=("scrub:$SCRUB")
@@ -109,7 +109,7 @@ if [ -e "$REF" ] && [ -n "${PURGE_CKPT:-}" ]; then
       --checkpoints "${D_ARGS[@]}" \
       --out_csv results/todo/distance_cifar10.csv
 else
-  log "SKIP D — need both the reference and a PURGE checkpoint"
+  log "SKIP D — need both the reference and an EXCISE checkpoint"
 fi
 
 # ---- summary ---------------------------------------------------------------

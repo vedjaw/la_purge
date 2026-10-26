@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ###############################################################################
-# PURGE — Resume Phases 4–10 (full settings)
+# EXCISE — Resume Phases 4–10 (full settings)
 #
 # Use this if run_all_new_experiments.sh stopped after Phase 3.
 # Run from 17_purge/ root:
@@ -52,12 +52,12 @@ skip_if_exists() {
     return 1
 }
 
-find_purge_ckpt() {
+find_excise_ckpt() {
     find "$RESULTS_DIR/multiseed/cifar10_c0_s42" -name "purge_*.pth" 2>/dev/null | head -1
 }
 
 log "============================================================"
-log " PURGE Phases 4–10 (full resume)"
+log " EXCISE Phases 4–10 (full resume)"
 log "  Data:        $DATA_DIR"
 log "  Checkpoints: $CKPT_DIR"
 log "  Results:     $RESULTS_DIR"
@@ -68,13 +68,13 @@ log "============================================================"
 require_file "$CKPT_DIR/base_cifar10_resnet18.pth" \
     "CIFAR-10 base checkpoint required (Phase 0A)."
 
-PURGE_CKPT="$(find_purge_ckpt || true)"
-if [ -z "$PURGE_CKPT" ]; then
-    log "WARNING: No PURGE checkpoint in results/multiseed/cifar10_c0_s42/"
+EXCISE_CKPT="$(find_excise_ckpt || true)"
+if [ -z "$EXCISE_CKPT" ]; then
+    log "WARNING: No EXCISE checkpoint in results/multiseed/cifar10_c0_s42/"
     log "  Phases 5, 9, 10 will be skipped."
     log "  Re-run Phase 1 for CIFAR-10 class 0 seed 42 first."
 else
-    log "PURGE checkpoint: $PURGE_CKPT"
+    log "EXCISE checkpoint: $EXCISE_CKPT"
 fi
 
 ###############################################################################
@@ -103,40 +103,40 @@ log "============================================================"
 log " PHASE 5: Fine-Tuning Recovery Attack"
 log "============================================================"
 OUT5="$RESULTS_DIR/finetune_recovery/recovery_cifar10_c0.csv"
-if [ -n "$PURGE_CKPT" ]; then
+if [ -n "$EXCISE_CKPT" ]; then
     if ! skip_if_exists "$OUT5"; then
         python experiments/exp_finetune_recovery.py \
             --dataset cifar10 --forget_class 0 \
-            --checkpoint "$PURGE_CKPT" \
+            --checkpoint "$EXCISE_CKPT" \
             --data_dir "$DATA_DIR" \
             --out_dir "$RESULTS_DIR/finetune_recovery" \
             --n_samples 50 --ft_epochs 10 --seed 42 \
             2>&1 | tee "$LOG_DIR/phase5_finetune_recovery.log"
     fi
 else
-    log "[SKIP] Phase 5 — no PURGE checkpoint."
+    log "[SKIP] Phase 5 — no EXCISE checkpoint."
 fi
 
 ###############################################################################
-# PHASE 6: FID (PURGE at minimum; add baselines manually if you have ckpts)
+# PHASE 6: FID (EXCISE at minimum; add baselines manually if you have ckpts)
 ###############################################################################
 log ""
 log "============================================================"
 log " PHASE 6: Feature-Space FID"
 log "============================================================"
 OUT6="$LOG_DIR/phase6_fid.log"
-if [ -n "$PURGE_CKPT" ]; then
+if [ -n "$EXCISE_CKPT" ]; then
     if ! skip_if_exists "$OUT6"; then
         python experiments/fid_baselines.py \
             --reference "$CKPT_DIR/base_cifar10_resnet18.pth" \
             --data_dir "$DATA_DIR" \
             --forget_class 0 \
-            --checkpoints "purge:$PURGE_CKPT" \
+            --checkpoints "purge:$EXCISE_CKPT" \
             2>&1 | tee "$LOG_DIR/phase6_fid.log" || \
             log "WARNING: Phase 6 FID failed (non-fatal). Add baseline ckpts and re-run."
     fi
 else
-    log "[SKIP] Phase 6 — no PURGE checkpoint."
+    log "[SKIP] Phase 6 — no EXCISE checkpoint."
     log "  Manual: python experiments/fid_baselines.py \\"
     log "    --reference $CKPT_DIR/base_cifar10_resnet18.pth \\"
     log "    --checkpoints purge:<ckpt> salun:<ckpt> scrub:<ckpt>"
@@ -188,17 +188,17 @@ log "============================================================"
 log " PHASE 9: BN Recalibration"
 log "============================================================"
 OUT9="$RESULTS_DIR/bn_recalibration_corrected.csv"
-if [ -n "$PURGE_CKPT" ]; then
+if [ -n "$EXCISE_CKPT" ]; then
     if ! skip_if_exists "$OUT9"; then
         python experiments/bn_recalibration.py \
-            --checkpoints "purge:$PURGE_CKPT" \
+            --checkpoints "purge:$EXCISE_CKPT" \
             --data_dir "$DATA_DIR" \
             --forget_class 0 \
             --out_csv "$OUT9" \
             2>&1 | tee "$LOG_DIR/phase9_bn_recalibration.log"
     fi
 else
-    log "[SKIP] Phase 9 — no PURGE checkpoint."
+    log "[SKIP] Phase 9 — no EXCISE checkpoint."
 fi
 
 ###############################################################################
@@ -208,19 +208,19 @@ log ""
 log "============================================================"
 log " PHASE 10: Linear Probe"
 log "============================================================"
-if [ -n "$PURGE_CKPT" ]; then
+if [ -n "$EXCISE_CKPT" ]; then
     if [ "$FORCE" = true ] || [ ! -f "$LOG_DIR/phase10_linear_probe.log" ]; then
         python experiments/linear_probe.py \
             --checkpoints \
                 "base:$CKPT_DIR/base_cifar10_resnet18.pth" \
-                "purge:$PURGE_CKPT" \
+                "purge:$EXCISE_CKPT" \
             --data_dir "$DATA_DIR" --forget_class 0 \
             2>&1 | tee "$LOG_DIR/phase10_linear_probe.log"
     else
         log "[SKIP] Phase 10 log exists: $LOG_DIR/phase10_linear_probe.log"
     fi
 else
-    log "[SKIP] Phase 10 — no PURGE checkpoint."
+    log "[SKIP] Phase 10 — no EXCISE checkpoint."
 fi
 
 ###############################################################################

@@ -84,5 +84,8 @@ results_sweep/**/log.txt
 *.zip
 prism_bundle/
 REVISION_PLAN.md
-paper/purge_tmlr_revisions.pdf
+paper/excise_tmlr_revisions.pdf
+# official TMLR style files: get them from github.com/JmlrOrg/tmlr-style-file
+paper/tmlr.sty
+paper/tmlr.bst
 paper/*_preview.pdf

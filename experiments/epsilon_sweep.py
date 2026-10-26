@@ -1,5 +1,5 @@
 """
-Epsilon / tolerance sweeps for PURGE (Sweep A and Sweep B in paper).
+Epsilon / tolerance sweeps for EXCISE (Sweep A and Sweep B in paper).
 """
 
 import argparse
@@ -36,7 +36,7 @@ def parse_metrics(log_text: str) -> dict:
 
 def run_one(args, label, alpha, fa_tgt):
     cmd = [
-        sys.executable, str(Path(args.purge_dir) / "run.py"),
+        sys.executable, str(Path(args.excise_dir) / "run.py"),
         "--dataset", "cifar10", "--model", "resnet18",
         "--forget_type", "class", "--forget_class", "0",
         "--checkpoint", args.base_ckpt,
@@ -107,7 +107,8 @@ def plot_sweep(rows, x_key, x_label, save_path, title):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--purge_dir", default=str(ROOT))
+    ap.add_argument("--excise_dir", "--purge_dir", dest="excise_dir",
+                    default=str(ROOT))
     ap.add_argument("--base_ckpt", default=str(ROOT / "checkpoints/base_cifar10_resnet18.pth"))
     ap.add_argument("--data_dir",  default=str(ROOT / "data"))
     ap.add_argument("--save_dir",  default=str(ROOT / "results/epsilon_sweep"))

@@ -1,7 +1,7 @@
 """
 GroupNorm multi-dataset experiment.
 
-For each dataset: train GN base model -> run PURGE+GN -> run BN recalibration
+For each dataset: train GN base model -> run EXCISE+GN -> run BN recalibration
 diagnostic -> report results. Uses 3 seeds.
 """
 import argparse
@@ -65,7 +65,7 @@ def train_gn_base(dataset, data_dir, save_dir, seed):
     return save_path
 
 
-def run_purge_gn(dataset, forget_class, seed, base_ckpt, config, data_dir,
+def run_excise_gn(dataset, forget_class, seed, base_ckpt, config, data_dir,
                  save_dir):
     label = f"gn_{dataset}_c{forget_class}_s{seed}"
     cmd = [
@@ -82,7 +82,7 @@ def run_purge_gn(dataset, forget_class, seed, base_ckpt, config, data_dir,
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "log.txt"
 
-    print(f"  [{label}] PURGE+GN running...", end=" ", flush=True)
+    print(f"  [{label}] EXCISE+GN running...", end=" ", flush=True)
     with open(log_path, "w") as f:
         proc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, text=True)
 
@@ -121,7 +121,7 @@ def main():
             continue
 
         for seed in args.seeds:
-            result = run_purge_gn(dataset, fc, seed, base_ckpt, config,
+            result = run_excise_gn(dataset, fc, seed, base_ckpt, config,
                                   args.data_dir, args.save_dir)
             all_results.append(result)
 

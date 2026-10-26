@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Close the runnable TODOs left in paper/purge_tmlr.tex.
+# Close the runnable TODOs left in paper/excise_tmlr.tex.
 #
 # Every result the paper still marks as pending was measured under the
 # SUPERSEDED optimiser (before the projection was moved to the post-momentum
@@ -143,7 +143,7 @@ done
 
 # ---- H. Direct projected-gradient baseline ---------------------------------
 # The reviewer asked for a direct projected-gradient baseline: A-GEM projection
-# on plain gradient ascent, WITHOUT PURGE's KD anchor or retain-confusion
+# on plain gradient ascent, WITHOUT EXCISE's KD anchor or retain-confusion
 # target. Isolates what the projection alone contributes.
 phase H_projection_only \
   "$PYTHON" -u run.py --config "$CFG" --checkpoint "$BASE" \

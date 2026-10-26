@@ -1,22 +1,26 @@
-# PURGE
+# EXCISE
 
-**Projected Unlearning via Retain-Guided Erasure**
+**Provably Retain-Safe Machine Unlearning via Gradient Projection**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-PURGE removes a class from a trained network while protecting what the network
+EXCISE removes a class from a trained network while protecting what the network
 should keep. It adapts A-GEM gradient projection from continual learning: before
 every step, the update the optimiser is about to apply, momentum included, is
 projected onto the half-space where it cannot increase the retain loss to first
 order. The resulting per-step retain-safety guarantee holds for the optimiser
 that actually runs, not for a momentum-free surrogate.
 
-**Paper:** [`paper/purge_tmlr.pdf`](paper/purge_tmlr.pdf) · source [`paper/purge_tmlr.tex`](paper/purge_tmlr.tex)
+**Paper:** [`paper/excise_tmlr.pdf`](paper/excise_tmlr.pdf) · source [`paper/excise_tmlr.tex`](paper/excise_tmlr.tex)
+
+> EXCISE was called PURGE in earlier versions of this work. Checkpoint files,
+> result folders and the method labels inside the CSVs keep that name
+> (`purge_*.pth`, `purge`), so the recorded results and the scripts still match.
 
 <p align="center">
-  <img src="images/fig_pipeline.png" width="92%" alt="How PURGE takes a step"/>
+  <img src="images/fig_pipeline.png" width="92%" alt="How EXCISE takes a step"/>
 </p>
 
 ---
@@ -28,7 +32,7 @@ that actually runs, not for a momentum-free surrogate.
 | **Exact per-step retain safety** | ⟨u<sub>t</sub>, g<sub>r</sub>⟩ ≥ 0 for the post-momentum update actually applied (Theorem 1), and logged at every step of real runs |
 | **Momentum is not incidental** | removing it to simplify the analysis stops forgetting on five of six datasets (e.g. MNIST forget accuracy 95.9%) |
 | **Six datasets, 31 forgetting tasks** | CIFAR-10, CIFAR-100, MNIST, SVHN, STL-10, PathMNIST with ResNet-18; ViT-B/16 on CIFAR-10 |
-| **BatchNorm: attacked, then fixed** | recomputing BatchNorm statistics undoes forgetting learned against frozen ones (ΔF = +98.4pp); BN-robust PURGE keeps forget accuracy at or below chance under that attack on all ten CIFAR-10 classes and on MNIST |
+| **BatchNorm: attacked, then fixed** | recomputing BatchNorm statistics undoes forgetting learned against frozen ones (ΔF = +98.4pp); BN-robust EXCISE keeps forget accuracy at or below chance under that attack on all ten CIFAR-10 classes and on MNIST |
 
 ---
 
@@ -50,7 +54,7 @@ A CUDA GPU is recommended. Datasets download to `./data` on first use
 #    -> checkpoints/base_cifar10_resnet18.pth
 python experiments/train_base_all.py --datasets cifar10 --data_dir ./data --save_dir ./checkpoints
 
-# 2. Forget CIFAR-10 class 0 with PURGE
+# 2. Forget CIFAR-10 class 0 with EXCISE
 python run.py --config configs/cifar10_kl_retain.yaml \
   --checkpoint ./checkpoints/base_cifar10_resnet18.pth \
   --data_dir ./data --save_dir ./checkpoints
@@ -60,10 +64,11 @@ python run.py --config configs/cifar10_kl_retain.yaml \
 per dataset. The run prints test, forget and retain accuracy (TA / FA / RA),
 membership-inference AUROC, and saves the unlearned checkpoint.
 
-### BN-robust PURGE
+### BN-robust EXCISE
 
 On a BatchNorm backbone, add these flags to keep the BatchNorm statistics
-consistent with the weights throughout unlearning (§5.6 of the paper):
+consistent with the weights throughout unlearning (§6.4 and Appendix F.6 of the
+paper):
 
 ```bash
 python run.py --config configs/cifar10_kl_retain.yaml \
@@ -77,7 +82,7 @@ python run.py --config configs/cifar10_kl_retain.yaml \
 
 ```bash
 python experiments/bn_illusion_attack.py --dataset cifar10 --forget_class 0 \
-  --data_dir ./data --checkpoints purge:<unlearned.pth> [--recal_on train|test]
+  --data_dir ./data --checkpoints excise:<unlearned.pth> [--recal_on train|test]
 ```
 
 The attack resets the BatchNorm statistics and recomputes them on the retain set
@@ -88,7 +93,7 @@ weight changed, and reports forget accuracy before and after.
 
 ## Results
 
-### Cross-dataset (Table 3)
+### Cross-dataset (Table 2)
 
 Mean ± std over classes × seeds (three seeds on the 10-class datasets, one seed
 per class on CIFAR-100). Chance = 100/K% is the level a fully unlearned model
@@ -107,16 +112,16 @@ STL-10 and CIFAR-100 are shown at a 60-epoch budget. At their configuration's
 epoch budget they stop short (FA 75.67% and 4.07%) because they get far fewer
 optimiser steps; the paper reports both.
 
-### BatchNorm recalibration and BN-robust PURGE (Table 10)
+### BatchNorm recalibration and BN-robust EXCISE (Table 6)
 
 CIFAR-10 class 0, three seeds, statistics recomputed on the retain set. These
 runs use a 93.97% base model, so they are self-contained.
 
 | | FA | FA after the attack | TA | RA | min / run |
 |---|---|---|---|---|---|
-| PURGE, frozen statistics | 8.51 ± 0.30 | **99.12** ± 0.09 | 85.20 | 97.34 | 1.9 |
-| PURGE, GroupNorm backbone | 5.91 ± 0.09 | n/a (no statistics) | 83.13 | 98.92 | 2.5 |
-| BN-robust PURGE | 9.19 ± 0.08 | **9.18** ± 0.07 | 84.30 | 95.59 | 13.3 |
+| EXCISE, frozen statistics | 8.51 ± 0.30 | **99.12** ± 0.09 | 85.20 | 97.34 | 1.9 |
+| EXCISE, GroupNorm backbone | 5.91 ± 0.09 | n/a (no statistics) | 83.13 | 98.92 | 2.5 |
+| BN-robust EXCISE | 9.19 ± 0.08 | **9.18** ± 0.07 | 84.30 | 95.59 | 13.3 |
 
 <p align="center">
   <img src="images/fig_bnrobust_attack.png" width="92%" alt="Forget accuracy before and after the recalibration attack"/>
@@ -135,7 +140,7 @@ script that produces it and the CSV it writes. All published numbers are in
 
 ```
 la_purge/
-├── run.py                 # PURGE: projected-momentum update, objectives, stopping, BN-robust mode
+├── run.py                 # EXCISE: projected-momentum update, objectives, stopping, BN-robust mode
 ├── configs/               # one YAML configuration per dataset
 ├── experiments/           # base training, attacks, ablations, diagnostics
 ├── run_hardening.sh       # numbered experiment phases behind the robustness results
@@ -170,7 +175,7 @@ configuration files unmodified.
 ## Citation
 
 ```bibtex
-@misc{purge2026,
+@misc{excise2026,
   title  = {Provably Retain-Safe Machine Unlearning via Gradient Projection},
   author = {Anonymous Author(s)},
   year   = {2026},

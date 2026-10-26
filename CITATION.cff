@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-title: PURGE
+title: EXCISE
 version: 1.0.0
 date-released: 2026-06-24
 license: MIT
@@ -14,7 +14,7 @@ keywords:
   - membership inference
 preferred-citation:
   type: article
-  title: "PURGE: Projected Unlearning via Retain-Guided Erasure"
+  title: "Provably Retain-Safe Machine Unlearning via Gradient Projection"
   authors:
     - name: "Anonymous Author(s)"
   year: 2026

@@ -142,7 +142,7 @@ def main():
     ap.add_argument("--batch_size", type=int, default=128)
     ap.add_argument("--retain_pass_n_batches", type=int, default=None)
     ap.add_argument("--checkpoints", nargs="+", required=True,
-                    help="name:path pairs, e.g. purge:checkpoints/purge.pth")
+                    help="name:path pairs, e.g. excise:checkpoints/<unlearned>.pth")
     ap.add_argument("--out_csv", default=str(ROOT / "results/bn_recalibration_summary.csv"))
     ap.add_argument("--use_groupnorm", action="store_true")
     args = ap.parse_args()

@@ -1,7 +1,7 @@
 """
 Per-step inner-product histogram for Theorem 2 validation.
 
-For PURGE (before projection), logs sign(dot(g_f, g_r)) at every step.
+For EXCISE (before projection), logs sign(dot(g_f, g_r)) at every step.
 Also runs a "no-projection" (raw GA/kl_retain) baseline to show what
 fraction of steps would have violated retain safety without projection.
 """

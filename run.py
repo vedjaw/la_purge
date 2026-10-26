@@ -1,11 +1,11 @@
 """
-PURGE: Projected Unlearning via Retain-Guided Erasure
-=====================================================
-Paper: [Under preparation — targeting top-tier ML venue]
+EXCISE: provably retain-safe machine unlearning via gradient projection
+=======================================================================
+Paper: paper/excise_tmlr.pdf
 
 Machine unlearning is the dual of continual learning: CL protects old knowledge
 while learning new tasks; MU protects retained knowledge while erasing old data.
-PURGE exploits this duality by adapting gradient projection (A-GEM) from CL to
+EXCISE exploits this duality by adapting gradient projection (A-GEM) from CL to
 constrain the unlearning process, ensuring every update step provably does not
 increase retain-set loss.
 
@@ -337,7 +337,7 @@ class ActivationExtractor:
 class _CyclingBatches:
     """An endless stream of batches over one DataLoader, created once.
 
-    BN-robust PURGE recalibrates at every optimiser step. Starting a fresh pass
+    BN-robust EXCISE recalibrates at every optimiser step. Starting a fresh pass
     over a DataLoader each time re-spawns its worker processes, and measured on
     CIFAR-10 that costs ~0.67 s per call regardless of how many images are read
     -- 72% of the recalibration overhead at 512 images. Holding one iterator
@@ -526,11 +526,11 @@ def representation_erasure_loss(forget_acts, retain_acts):
     return total / max(count, 1)
 
 
-# ======================== PURGE ========================
+# ======================== EXCISE ========================
 
-def purge_unlearn(model, forget_loader, retain_loader, device, args):
+def excise_unlearn(model, forget_loader, retain_loader, device, args):
     """
-    PURGE main loop.
+    EXCISE main loop.
 
     Per-step procedure
     ------------------
@@ -545,7 +545,7 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
        guarantee holds for the update actually applied, even with momentum.
     """
     print(f"\n{'=' * 60}")
-    print(" PURGE: Projected Unlearning via Retain-Guided Erasure")
+    print(" EXCISE: retain-safe unlearning via gradient projection")
     print(f"{'=' * 60}")
 
     # Frozen reference for KD anchoring
@@ -881,7 +881,7 @@ def purge_unlearn(model, forget_loader, retain_loader, device, args):
             x_r, y_r = x_r.to(device), y_r.view(-1).to(device)
 
             # -------- BN-robust variants ----------------------------------
-            # The recalibration attack succeeds because PURGE freezes phi at
+            # The recalibration attack succeeds because EXCISE freezes phi at
             # phi_0 while theta adapts against it: the final weights are valid
             # only for statistics the attacker can replace. Both variants below
             # keep phi tracking theta during unlearning, so that the attacker's
@@ -1355,7 +1355,8 @@ def train_model(model, loader, device, epochs=5, lr=0.01):
 
 def main():
     p = argparse.ArgumentParser(
-        description="PURGE: Projected Unlearning via Retain-Guided Erasure")
+        description="EXCISE: provably retain-safe machine unlearning via "
+                    "gradient projection")
 
     # data / model
     p.add_argument('--dataset', default='cifar10',
@@ -1372,7 +1373,7 @@ def main():
     p.add_argument('--forget_class', type=int, default=None,
                    help='Class to forget (class mode)')
 
-    # PURGE hyper-parameters
+    # EXCISE hyper-parameters
     p.add_argument('--epochs', type=int, default=10)
     p.add_argument('--lr', type=float, default=5e-4)
     p.add_argument('--momentum', type=float, default=0.9,
@@ -1599,15 +1600,15 @@ def main():
     evaluate(model, forget_loader, device, "Forget Accuracy (should DROP)")
     evaluate(model, retain_loader, device, "Retain Accuracy (should STAY)")
 
-    # ---------- PURGE ----------
+    # ---------- EXCISE ----------
     t0 = time.time()
-    model, history = purge_unlearn(
+    model, history = excise_unlearn(
         model, forget_loader, retain_loader, device, args)
     elapsed = time.time() - t0
     print(f"\n  Unlearning completed in {elapsed:.1f}s")
 
     # ---------- after ----------
-    print("\n=== After PURGE Unlearning ===")
+    print("\n=== After EXCISE Unlearning ===")
     ta = evaluate(model, test_loader, device, "Test Accuracy  (TA)")
     fa = evaluate(model, forget_loader, device,
                   "Forget Accuracy (FA — want LOW)")
@@ -1633,7 +1634,7 @@ def main():
 
     # ---------- summary ----------
     print(f"\n{'=' * 60}")
-    print(" PURGE — Results Summary")
+    print(" EXCISE — Results Summary")
     print(f"{'=' * 60}")
     print(f"  Test Accuracy      (TA) : {ta:.2f}%")
     print(f"  Forget Accuracy    (FA) : {fa:.2f}%")
@@ -1654,6 +1655,8 @@ def main():
     # ---------- save ----------
     forget_tag = (f"c{args.forget_class}" if args.forget_type == 'class'
                   else f"s{args.forget_pct}")
+    # Checkpoints keep the method's former name, PURGE, as their prefix, so
+    # existing results and the experiment scripts still find them.
     tag = (f"purge_{args.dataset}_{args.model}_{args.forget_type}_"
            f"{forget_tag}_ep{args.epochs}_lr{args.lr}")
     save_path = os.path.join(args.save_dir, f"{tag}.pth")

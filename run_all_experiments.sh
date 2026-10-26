@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Run all PURGE experiments strictly one-at-a-time (no overlap -> no OOM).
+# Run all EXCISE experiments strictly one-at-a-time (no overlap -> no OOM).
 #
 # Usage:
 #   bash run_all_experiments.sh
@@ -52,7 +52,7 @@ for ck in checkpoints/base_cifar10_resnet18.pth checkpoints/base_cifar100_resnet
   [ -f "$ck" ] || log "WARN   missing checkpoint: $ck (phases that need it will fail)"
 done
 
-log "######## PURGE full experiment sweep | stamp=$STAMP | python=$PYTHON ########"
+log "######## EXCISE full experiment sweep | stamp=$STAMP | python=$PYTHON ########"
 SWEEP_START=$SECONDS
 
 # 1. ESSENTIAL -- headline + cross-dataset (5 datasets x 3 seeds)  -> results/multiseed/

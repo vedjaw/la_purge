@@ -1,7 +1,7 @@
 """
 Per-step retain-loss and inner-product trajectory logger.
 
-Runs a modified PURGE loop that logs retain CE, forget CE, and the raw
+Runs a modified EXCISE loop that logs retain CE, forget CE, and the raw
 inner product <g_f, g_r> BEFORE projection at every single gradient step.
 Outputs a CSV for plotting (empirical validation of Theorem 1).
 """

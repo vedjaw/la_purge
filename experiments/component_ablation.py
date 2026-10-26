@@ -1,7 +1,7 @@
 """
-Component-isolation ablation for PURGE (component-ablation table in the paper).
+Component-isolation ablation for EXCISE (component-ablation table in the paper).
 
-Disables (or re-adds) exactly one PURGE component at a time on CIFAR-10 class 0.
+Disables (or re-adds) exactly one EXCISE component at a time on CIFAR-10 class 0.
 
 Two modes, because dual stopping confounds a naive ablation
 --------------------------------------------------------------------------
@@ -27,7 +27,7 @@ Because run.py lets explicit CLI flags override config values, each variant is
 exactly "the config, with one thing changed".
 
 Note on `plus_rep` / `plus_gate`: representation erasure and the entropy gate
-were REMOVED from PURGE (ablation-inactive), so the config ships them at 0.
+were REMOVED from EXCISE (ablation-inactive), so the config ships them at 0.
 Disabling them would be a no-op; instead we re-ADD them to verify they still
 fail to help — the up-to-date evidence for having dropped them.
 """
@@ -63,7 +63,7 @@ FIXED_BUDGET_FLAGS = ["--fa_target", "-1.0", "--retain_budget_factor", "9999.0"]
 
 
 def parse_metrics(log_text: str) -> dict:
-    """Extract metrics + run diagnostics from a PURGE run.py log."""
+    """Extract metrics + run diagnostics from an EXCISE run.py log."""
     out = {}
     patterns = {
         "TA":         r"Test Accuracy\s*\(TA\)\s*:\s*([\d.]+)%",
@@ -104,7 +104,7 @@ def parse_metrics(log_text: str) -> dict:
 def run_one(args, mode: str, label: str, extra_flags: list) -> dict:
     tag = f"{mode}__{label}"
     cmd = [
-        sys.executable, str(Path(args.purge_dir) / "run.py"),
+        sys.executable, str(Path(args.excise_dir) / "run.py"),
         "--config", args.config,
         "--checkpoint", args.base_ckpt,
         "--data_dir", args.data_dir,
@@ -183,7 +183,8 @@ def print_table(results, mode):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--purge_dir", default=str(ROOT))
+    ap.add_argument("--excise_dir", "--purge_dir", dest="excise_dir",
+                    default=str(ROOT))
     ap.add_argument("--config", default=str(ROOT / "configs/cifar10_kl_retain.yaml"),
                     help="Dataset config; hyper-parameters are taken from here.")
     ap.add_argument("--base_ckpt", default=str(ROOT / "checkpoints/base_cifar10_resnet18.pth"))
