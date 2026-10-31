@@ -48,26 +48,28 @@ Rows follow the order in which results first appear in the paper.
 
 | Paper | What | Command | Output |
 |-------|------|---------|--------|
-| Fig. 3, App. F.4 | step-level audit of the guarantee | `python experiments/exp_perstep_trajectory.py --checkpoint <base.pth>` | `results/perstep/perstep_cifar10_c0_s42.csv` |
+| Fig. 1, §1 | the paper in one picture: projected update, CIFAR-10 outcome, BatchNorm attack | `python gen_teaser_fig.py` (reads the step-level CSV; panels (b) and (c) copy Tables 4 and 22) | `images/fig_teaser.png` |
+| Table 2 | each claim and the experiment that tests it | — (a map of the rows below) | — |
+| Fig. 3, §6.3, App. F.4 | step-level audit of the guarantee | `python experiments/exp_perstep_trajectory.py --checkpoint <base.pth>` | `results/perstep/perstep_cifar10_c0_s42.csv` |
 | App. F.4 | inner-product histogram | `python experiments/exp_innerproduct_histogram.py --checkpoint <base.pth>` | `results/innerproduct/` |
-| Table 2, Fig. 7 | cross-dataset results, 31 tasks | `python experiments/exp_multiseed_all.py` | `results/multiseed/multiseed_all.csv`, `results/cifar100/cifar100_summary_projmom.csv` |
-| Table 2, lower block | STL-10 and CIFAR-100 at 60 epochs | `bash run_hardening.sh 2 8` | `results/hardening/rescue.csv`, `results/hardening/table_grade.csv` |
-| Table 3 | CIFAR-10 class 0 against baselines | EXCISE row as Table 2; projection-only is `run.py --forget_objective ga --kd_weight 0` | — |
-| Table 4, Fig. 8 | momentum ablation (μ = 0 vs projected momentum) | the runs of Table 2 with `--momentum 0` | `results/archive_mu0/*_MU0.csv` |
-| Table 5 | BatchNorm-recalibration attack on EXCISE and baselines | `bash run_hardening.sh 9`, or `bn_illusion_attack.py` (below) | `results/hardening/bn_illusion.csv`, `bn_illusion_vit.csv` |
-| Tables 6 and 20, Figs. 5, 6, 9 and 13 | BN-robust EXCISE | `bash run_hardening.sh 19 20 21 22 23 24 25 26 27 28 29 30` | `results/hardening/bn_robust/` (see its README) |
-| Table 8 | CIFAR-100, nine classes | `python experiments/exp_multiseed_all.py --datasets cifar100` | `results/cifar100/cifar100_summary_projmom.csv` |
-| Table 9 | where the momentum dependence comes from | `bash run_hardening.sh 12 14` | `results/hardening/momentum_datasets.csv`, `momentum_rules.csv` |
-| Table 10 | GroupNorm backbone, five datasets | `python experiments/exp_groupnorm_multi.py` | `results/groupnorm_multi/groupnorm_multi_summary.csv` |
-| Table 11 | ViT-B/16 on CIFAR-10 | `bash run_hardening.sh 10` (`run.py --model vit_b_16`) | `results/vit/`, `results/hardening/vit.csv` |
-| Table 12 | component ablation | `python experiments/component_ablation.py` | `results/ablation/component_ablation_summary.csv` |
-| Table 13, Fig. 10 | projection strength, from soft penalty to hard constraint | `run.py --projection_strength s --fa_target -1 --retain_budget_factor 9999`, s ∈ {0, 0.25, 0.5, 0.75, 1} | `results/strength_sweep.csv` |
-| Table 14 | retain-budget and forget-target sweeps | `python experiments/epsilon_sweep.py` | `results/epsilon_sweep/`, `results_sweep/` |
+| Table 3, Fig. 5 | cross-dataset results, 31 tasks | `python experiments/exp_multiseed_all.py` | `results/multiseed/multiseed_all.csv`, `results/cifar100/cifar100_summary_projmom.csv` |
+| Table 3, lower block | STL-10 and CIFAR-100 at 60 epochs (per-step check, 1% forget target) | `bash run_hardening.sh 2 8` | `results/hardening/rescue.csv`, `results/hardening/table_grade.csv` |
+| Table 4 | CIFAR-10 class 0 against baselines | EXCISE row as Table 2; projection-only is `run.py --forget_objective ga --kd_weight 0` | — |
+| Table 5, Fig. 6 | momentum ablation (μ = 0 vs projected momentum) | the runs of Table 2 with `--momentum 0` | `results/archive_mu0/*_MU0.csv` |
+| Table 6 | BatchNorm-recalibration attack on EXCISE and baselines | `bash run_hardening.sh 9`, or `bn_illusion_attack.py` (below) | `results/hardening/bn_illusion.csv`, `bn_illusion_vit.csv` |
+| Tables 7 and 22, Figs. 1c, 4, 7, 8 and 12 | BN-robust EXCISE | `bash run_hardening.sh 19 20 21 22 23 24 25 26 27 28 29 30` | `results/hardening/bn_robust/` (see its README) |
+| Table 10 | CIFAR-100, nine classes | `python experiments/exp_multiseed_all.py --datasets cifar100` | `results/cifar100/cifar100_summary_projmom.csv` |
+| Table 11 | where the momentum dependence comes from | `bash run_hardening.sh 12 14` | `results/hardening/momentum_datasets.csv`, `momentum_rules.csv` |
+| Table 12 | GroupNorm backbone, five datasets | `python experiments/exp_groupnorm_multi.py` | `results/groupnorm_multi/groupnorm_multi_summary.csv` |
+| Table 13 | ViT-B/16 on CIFAR-10 and CIFAR-100 | `bash run_hardening.sh 10 11` (`run.py --model vit_b_16`) | `results/vit/`, `results/hardening/vit.csv` |
+| Table 14, §6.3 | component ablation | `python experiments/component_ablation.py` | `results/ablation/component_ablation_summary.csv` |
+| Table 15, Fig. 9, §6.3 | projection strength, from soft penalty to hard constraint | `run.py --projection_strength s --fa_target -1 --retain_budget_factor 9999`, s ∈ {0, 0.25, 0.5, 0.75, 1} | `results/strength_sweep.csv` |
+| Table 16 | retain-budget and forget-target sweeps | `python experiments/epsilon_sweep.py` | `results/epsilon_sweep/`, `results_sweep/` |
 | App. F.10 | adaptive forget-accuracy check | `bash run_hardening.sh 1` | `results/hardening/eps_adaptive.csv` |
-| Table 15 | distance to a retrained model | `python experiments/distance_to_retrained.py` | `results/todo/distance_cifar10.csv`, `results/kl_stopping/distance_to_retrained.csv` |
-| Tables 16–17 | membership inference against a retrained reference | `python experiments/mia_suite.py`, `bash run_hardening.sh 5 6` | `results/todo/mia_suite_cifar10.csv`, `results/hardening/mia_suite_pathmnist*.csv` |
-| Fig. 11, Table 23 | over-forgetting, KL stopping, where to stop | `python experiments/trajectory_sweep.py`, `python experiments/validate_kl_stopping.py` | `results/trajectory/trajectory_sweep.csv`, `results/kl_stopping/` |
-| Tables 18–19, Fig. 12 | per-class results, MNIST and PathMNIST | the runs of Table 2 | `results/multiseed/multiseed_all.csv` |
+| Table 17 | distance to a retrained model | `python experiments/distance_to_retrained.py` | `results/todo/distance_cifar10.csv`, `results/kl_stopping/distance_to_retrained.csv` |
+| Tables 8, 18 and 19 | membership inference against a retrained reference | `python experiments/mia_suite.py`, `bash run_hardening.sh 5 6` | `results/todo/mia_suite_cifar10.csv`, `results/hardening/mia_suite_pathmnist*.csv` |
+| Fig. 10, Table 25 | over-forgetting, KL stopping, where to stop | `python experiments/trajectory_sweep.py`, `python experiments/validate_kl_stopping.py` | `results/trajectory/trajectory_sweep.csv`, `results/kl_stopping/` |
+| Tables 20–21, Fig. 11 | per-class results, MNIST and PathMNIST | the runs of Table 2 | `results/multiseed/multiseed_all.csv` |
 | §7, App. G | sample-level forgetting | `bash run_hardening.sh 3 7` | `results/hardening/sample_level*.csv` |
 | §7, App. G | sequential unlearning, fine-tuning recovery | `experiments/exp_sequential_unlearn.py`, `experiments/exp_finetune_recovery.py` | `results/sequential/`, `results/finetune_recovery/`, `results/todo/` |
 
@@ -96,7 +98,7 @@ python experiments/bn_illusion_attack.py --dataset cifar10 --forget_class 0 --da
   --checkpoints frozen:<unlearned.pth> robust:<bn_robust.pth> --out_csv results/bn_attack.csv
 ```
 
-BN-robust EXCISE, final configuration (Table 6, last row):
+BN-robust EXCISE, final configuration (Table 7, last row):
 
 ```bash
 python run.py --config configs/cifar10_kl_retain.yaml \
@@ -120,12 +122,13 @@ python run.py --config configs/cifar10_kl_retain.yaml \
 
 | Script | Figures |
 |--------|---------|
-| `gen_schematic_figs.py` | `fig_pipeline.png` (Fig. 1), `fig_projection_order.png` (Fig. 2) |
-| `gen_advantage_fig.py` | `fig_advantage.png` (Fig. 4) |
-| `gen_paper_figs.py` | `fig_guarantee.png` (Fig. 3), `fig_crossdataset.png` (Fig. 7), `fig_momentum.png` (Fig. 8), `fig_perclass.png` (Fig. 12) |
-| `gen_strength_fig.py` | `fig_strength.png` (Fig. 10) |
-| `gen_trajectory_fig.py` | `fig_trajectory.png` (Fig. 11) |
-| `gen_bnrobust_figs.py` | `fig_bnrobust_mechanism.png` (Fig. 5), `fig_bnrobust_attack.png` (Fig. 6), `fig_bnrobust_stopping.png` (Fig. 9), `fig_bnrobust_perclass.png` (Fig. 13) |
+| `gen_teaser_fig.py` | `fig_teaser.png` (Fig. 1) |
+| `gen_schematic_figs.py` | `fig_projection_order.png` (Fig. 2); `fig_pipeline.png`, no longer in the paper |
+| `gen_advantage_fig.py` | `fig_advantage.png`, no longer in the paper (Fig. 1 replaces it) |
+| `gen_paper_figs.py` | `fig_guarantee.png` (Fig. 3), `fig_crossdataset.png` (Fig. 5), `fig_momentum.png` (Fig. 6), `fig_perclass.png` (Fig. 11) |
+| `gen_strength_fig.py` | `fig_strength.png` (Fig. 9) |
+| `gen_trajectory_fig.py` | `fig_trajectory.png` (Fig. 10) |
+| `gen_bnrobust_figs.py` | `fig_bnrobust_mechanism.png` (Fig. 7), `fig_bnrobust_attack.png` (Fig. 4), `fig_bnrobust_stopping.png` (Fig. 8), `fig_bnrobust_perclass.png` (Fig. 12) |
 
 `gen_pareto.py` and `gen_purge_vs_salun_fig.py` draw figures used only by the
 earlier AAAI version in `paper/`.

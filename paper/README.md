@@ -21,8 +21,11 @@ which are not included; get them from
 Without them the source falls back to a plain `article` layout with `plainnat`,
 and the page count differs from the TMLR layout.
 
-Text added in the latest revision is wrapped in `\added{...}` and shows in
-orange in the build above. The bundled PDF is built without the marking:
+Text changed in the latest revision (in response to the review of 31 October
+2026) is wrapped in `\rev{...}` and shows in blue in the build above. Text from
+the round before is wrapped in `\added{...}` and now prints black; build with
+`"\def\showpreviousround{}\input{excise_tmlr}"` to see it in orange. The
+bundled PDF is built without any marking:
 
 ```bash
 pdflatex -jobname=excise_tmlr "\def\finalversion{}\input{excise_tmlr}"

@@ -1,4 +1,4 @@
-# BN-robust EXCISE: results behind §6.4, Appendix F.6, Tables 6 and 20, and Figures 5, 6, 9 and 13
+# BN-robust EXCISE: results behind §6.5, Appendix F.6, Tables 7 and 22, and Figures 1c, 4, 7, 8 and 12
 
 These runs test BN-robust EXCISE (`run.py --bn_robust exact`), which keeps the
 BatchNorm statistics consistent with the weights throughout unlearning, against
@@ -22,7 +22,7 @@ start with `purge_`.
 * **Chance.** 10% for a 10-class problem. "Within chance + 3 SE" means at most
   11.27% for a 5,000-image forget set.
 
-## Headline comparison (CIFAR-10, class 0, three seeds) — Table 6
+## Headline comparison (CIFAR-10, class 0, three seeds) — Table 7
 
 | variant                         | base TA | FA         | post-attack FA | TA         | RA         | MIA   | min  |
 |---------------------------------|---------|------------|----------------|------------|------------|-------|------|
@@ -48,19 +48,19 @@ phase.
 | file | what it holds | backs |
 |------|---------------|-------|
 | `bn_robust_phase17.csv`, `bn_robust_phase18.csv` | first exploration: frozen / exact / EMA variants, 5× and 100× retain budgets | — |
-| `bn_robust_phase19_3seeds.csv` | frozen (`off_s*`), exact on 2,048 images (`exact_s*`), exact every 5th step (`exact5_s*`) | Table 6, Fig. 6, Table 20 (class 0) |
+| `bn_robust_phase19_3seeds.csv` | frozen (`off_s*`), exact on 2,048 images (`exact_s*`), exact every 5th step (`exact5_s*`) | Table 7, Fig. 4, Table 22 (class 0) |
 | `bn_robust_phase20_512imgs.csv` | exact on 512 images, per-call loader: post-attack FA 11.09±0.98, same as 2,048 images | the 512-image setting (§6.4, App. F.6) |
-| `bn_robust_phase21_512imgs_persistent.csv` | BN-robust with naive stopping (`exact512p_s*`) | Table 6, Fig. 6, Table 20 (class 0) |
-| `bn_robust_phase22_groupnorm.csv` | EXCISE on the GroupNorm base (`gn_s*`); the attack is undefined on it | Table 6 |
-| `bn_robust_phase23_classes1-9.csv` | classes 1–9, seed 42: frozen (`off_c*`) vs BN-robust, naive stopping (`exact512_c*`) | Table 20, Fig. 13 |
-| `bn_robust_phase24_recal_{train,test}.csv` | the attack with the attacker's own data: the full training set (forget class included) or the test set (`--recal_on`) | Fig. 6b |
-| `bn_robust_phase25_base_control_{retain,train,test}.csv` | the un-unlearned base model under the same attacks: the control | Table 6 |
-| `bn_robust_phase26_calibrated_stop.csv` | `--bn_calibrated_stop`, full-set check: 9.19±0.06 | Table 20 (class 0) |
-| `bn_robust_phase27_calibrated_classes1-9.csv` | calibrated stopping on classes 1–9 (`cal_c*`), cap 25 epochs | Table 20, Fig. 13 |
-| `bn_robust_phase28_class4_restore_best.csv` | class 4 with `--restore_best_epoch`: ships epoch 22 at 10.18% | Table 20, Fig. 9c |
-| `bn_robust_phase29_mnist.csv` | MNIST, three seeds: frozen (`off_s*`) vs BN-robust in its final form (`robust_s*`) | Fig. 6a |
-| `bn_robust_phase30_capped_check.csv` | the final configuration: calibrated stopping on a 10,240-image check (`--bn_stop_recal_samples 10240`) plus `--restore_best_epoch` | Table 6 |
-| `stopping_traces.csv` | per-epoch FA under the in-loop and the shipped statistics for every calibrated run, with the retain loss and the epoch that shipped | Fig. 9 |
+| `bn_robust_phase21_512imgs_persistent.csv` | BN-robust with naive stopping (`exact512p_s*`) | Table 7, Fig. 4, Table 22 (class 0) |
+| `bn_robust_phase22_groupnorm.csv` | EXCISE on the GroupNorm base (`gn_s*`); the attack is undefined on it | Table 7 |
+| `bn_robust_phase23_classes1-9.csv` | classes 1–9, seed 42: frozen (`off_c*`) vs BN-robust, naive stopping (`exact512_c*`) | Table 22, Fig. 12 |
+| `bn_robust_phase24_recal_{train,test}.csv` | the attack with the attacker's own data: the full training set (forget class included) or the test set (`--recal_on`) | Fig. 4b |
+| `bn_robust_phase25_base_control_{retain,train,test}.csv` | the un-unlearned base model under the same attacks: the control | Table 7 |
+| `bn_robust_phase26_calibrated_stop.csv` | `--bn_calibrated_stop`, full-set check: 9.19±0.06 | Table 22 (class 0) |
+| `bn_robust_phase27_calibrated_classes1-9.csv` | calibrated stopping on classes 1–9 (`cal_c*`), cap 25 epochs | Table 22, Fig. 12 |
+| `bn_robust_phase28_class4_restore_best.csv` | class 4 with `--restore_best_epoch`: ships epoch 22 at 10.18% | Table 22, Fig. 8c |
+| `bn_robust_phase29_mnist.csv` | MNIST, three seeds: frozen (`off_s*`) vs BN-robust in its final form (`robust_s*`) | Fig. 4a |
+| `bn_robust_phase30_capped_check.csv` | the final configuration: calibrated stopping on a 10,240-image check (`--bn_stop_recal_samples 10240`) plus `--restore_best_epoch` | Table 7 |
+| `stopping_traces.csv` | per-epoch FA under the in-loop and the shipped statistics for every calibrated run, with the retain loss and the epoch that shipped | Fig. 8 |
 
 Figures 5, 6, 9 and 13 are generated from these files by `gen_bnrobust_figs.py`.
 

@@ -20,7 +20,7 @@ that actually runs, not for a momentum-free surrogate.
 > (`purge_*.pth`, `purge`), so the recorded results and the scripts still match.
 
 <p align="center">
-  <img src="images/fig_pipeline.png" width="92%" alt="How EXCISE takes a step"/>
+  <img src="images/fig_teaser.png" width="96%" alt="EXCISE in one picture: the projected update, results on CIFAR-10, and the BatchNorm recalibration attack"/>
 </p>
 
 ---
@@ -67,7 +67,7 @@ membership-inference AUROC, and saves the unlearned checkpoint.
 ### BN-robust EXCISE
 
 On a BatchNorm backbone, add these flags to keep the BatchNorm statistics
-consistent with the weights throughout unlearning (§6.4 and Appendix F.6 of the
+consistent with the weights throughout unlearning (§6.5 and Appendix F.6 of the
 paper):
 
 ```bash
@@ -93,10 +93,10 @@ weight changed, and reports forget accuracy before and after.
 
 ## Results
 
-### Cross-dataset (Table 2)
+### Cross-dataset (Table 3)
 
-Mean ± std over classes × seeds (three seeds on the 10-class datasets, one seed
-per class on CIFAR-100). Chance = 100/K% is the level a fully unlearned model
+Mean ± sample std over classes × seeds (three seeds per task, one seed per class
+on CIFAR-100). Chance = 100/K% is the level a fully unlearned model
 must reach.
 
 | Dataset | tasks | chance | TA | FA ↓ | RA | MIA |
@@ -105,14 +105,16 @@ must reach.
 | MNIST     | 10 | 10.0% | 90.00 ± 0.64 | **6.17** ± 2.81 | 99.49 ± 0.04 | 0.497 ± 0.009 |
 | SVHN      | 1 | 10.0% | 89.69 ± 0.02 | **5.75** ± 0.17 | 97.26 ± 0.01 | 0.525 ± 0.001 |
 | PathMNIST | 9 | 11.1% | 80.96 ± 5.39 | **5.82** ± 3.42 | 98.88 ± 0.31 | 0.483 ± 0.084 |
-| STL-10    | 1 | 10.0% | 85.15 ± 0.05 | **1.73** ± 0.77 | 98.87 ± 0.04 | 0.491 ± 0.007 |
-| CIFAR-100 | 9 | 1.0% | 75.50 ± 0.64 | **1.27** ± 0.37 | 91.32 ± 0.88 | 0.494 ± 0.038 |
+| STL-10    | 1 | 10.0% | 85.15 ± 0.06 | **1.73** ± 0.95 | 98.87 ± 0.05 | 0.488 ± 0.008 |
+| CIFAR-100 | 9 | 1.0% | 75.50 ± 0.68 | **1.27** ± 0.39 | 91.32 ± 0.94 | 0.490 ± 0.043 |
 
-STL-10 and CIFAR-100 are shown at a 60-epoch budget. At their configuration's
-epoch budget they stop short (FA 75.67% and 4.07%) because they get far fewer
-optimiser steps; the paper reports both.
+STL-10 and CIFAR-100 are shown at a 60-epoch budget, with forget accuracy checked
+every step and a 1% forget target. At their configuration's epoch cap they stop
+short (FA 75.67% and 4.07%) because they get far fewer optimiser steps; the
+paper reports both. With its default 10% target, a single 60-epoch STL-10 run
+stops at 9.2%.
 
-### BatchNorm recalibration and BN-robust EXCISE (Table 6)
+### BatchNorm recalibration and BN-robust EXCISE (Table 7)
 
 CIFAR-10 class 0, three seeds, statistics recomputed on the retain set. These
 runs use a 93.97% base model, so they are self-contained.
